@@ -1,0 +1,105 @@
+Screen {
+    background: $surface;
+    color: $text;
+}
+
+#top-header {
+    dock: top;
+    height: 3;
+    background: $primary-darken-2;
+    color: $text;
+    padding: 0 1;
+    border-bottom: heavy $primary;
+}
+
+#header-title {
+    text-style: bold;
+    color: $accent;
+    width: 35;
+    padding: 0 1;
+}
+
+#header-caps {
+    width: 1fr;
+    text-align: right;
+    padding: 0 1;
+}
+
+#main-content {
+    height: 1fr;
+    layout: horizontal;
+}
+
+#left-panel {
+    width: 32;
+    height: 100%;
+    border-right: solid $primary-darken-1;
+    padding: 0 1;
+    background: $surface-darken-1;
+}
+
+.panel-title {
+    text-style: bold;
+    color: $primary-lighten-1;
+    margin-top: 1;
+    margin-bottom: 0;
+    border-bottom: solid $primary-darken-2;
+}
+
+.metric-label {
+    margin-top: 0;
+    color: $text-muted;
+}
+
+.metric-value {
+    text-style: bold;
+    color: $text;
+    margin-bottom: 0;
+}
+
+#right-panel {
+    width: 1fr;
+    height: 100%;
+    layout: vertical;
+}
+
+#workload-table-container {
+    height: 55%;
+    border-bottom: solid $primary-darken-1;
+    padding: 0 1;
+}
+
+#workloads-table {
+    height: 1fr;
+}
+
+#bottom-tabs-container {
+    height: 45%;
+    padding: 0 1;
+}
+
+#events-log {
+    height: 1fr;
+    background: $surface-darken-2;
+    border: solid $secondary-darken-1;
+}
+
+#workload-logs-view {
+    height: 1fr;
+    background: $surface-darken-2;
+    border: solid $secondary-darken-1;
+    padding: 0 1;
+}
+
+#capabilities-view {
+    height: 1fr;
+    padding: 1;
+}
+
+#footer-bar {
+    dock: bottom;
+    height: 1;
+    background: $primary-darken-3;
+    color: $text;
+    text-align: center;
+}

@@ -1,0 +1,573 @@
+{
+  "system": {
+    "timestamp": "2026-10-10T00:02:39.890880",
+    "hostname": "fedora",
+    "kernel": "7.1.13-200.fc44.x86_64",
+    "arch": "x86_64",
+    "python_version": "3.14.7",
+    "os": "Fedora Linux 44 (KDE Plasma Desktop Edition)",
+    "cpu_model": "AMD Ryzen 7 250 w/ Radeon 780M Graphics",
+    "cpu_cores": 16,
+    "ram_total_gb": 13.28,
+    "compiler": "gcc (GCC) 16.2.1 20260819 (Red Hat 16.2.1-2)",
+    "runtime_version": "minibox version 0.5.0-phase5 (Phase 5: Resource Monitoring & Metrics)"
+  },
+  "launch_overhead": {
+    "direct": {
+      "trials_requested": 10,
+      "trials_successful": 10,
+      "stats_ms": {
+        "min": 0.477,
+        "max": 1.442,
+        "mean": 0.809,
+        "median": 0.647,
+        "stddev": 0.365
+      },
+      "raw_measurements_ms": [
+        0.528,
+        0.631,
+        0.836,
+        1.341,
+        1.131,
+        1.442,
+        0.663,
+        0.552,
+        0.488,
+        0.477
+      ],
+      "failures": [],
+      "overhead_ms": 0.0,
+      "ratio_to_direct": 1.0
+    },
+    "minibox_baseline": {
+      "trials_requested": 10,
+      "trials_successful": 10,
+      "stats_ms": {
+        "min": 0.922,
+        "max": 1.29,
+        "mean": 1.126,
+        "median": 1.141,
+        "stddev": 0.128
+      },
+      "raw_measurements_ms": [
+        1.051,
+        0.979,
+        0.922,
+        1.287,
+        1.202,
+        1.22,
+        1.29,
+        1.112,
+        1.033,
+        1.17
+      ],
+      "failures": [],
+      "overhead_ms": 0.494,
+      "ratio_to_direct": 1.76
+    },
+    "minibox_isolated": {
+      "trials_requested": 10,
+      "trials_successful": 10,
+      "stats_ms": {
+        "min": 1.319,
+        "max": 2.112,
+        "mean": 1.619,
+        "median": 1.588,
+        "stddev": 0.199
+      },
+      "raw_measurements_ms": [
+        2.112,
+        1.632,
+        1.319,
+        1.605,
+        1.535,
+        1.604,
+        1.698,
+        1.573,
+        1.546,
+        1.564
+      ],
+      "failures": [],
+      "overhead_ms": 0.941,
+      "ratio_to_direct": 2.45
+    },
+    "minibox_cgroups": {
+      "trials_requested": 10,
+      "trials_successful": 10,
+      "stats_ms": {
+        "min": 1.683,
+        "max": 18.703,
+        "mean": 3.762,
+        "median": 1.969,
+        "stddev": 5.274
+      },
+      "raw_measurements_ms": [
+        18.703,
+        3.433,
+        1.968,
+        2.234,
+        2.163,
+        1.95,
+        1.97,
+        1.786,
+        1.732,
+        1.683
+      ],
+      "failures": [],
+      "overhead_ms": 1.322,
+      "ratio_to_direct": 3.04
+    }
+  },
+  "cpu_throttling": {
+    "direct_100pct": {
+      "target_sec": 2,
+      "trials_successful": 10,
+      "stats_wall_sec": {
+        "min": 2.001,
+        "max": 2.001,
+        "mean": 2.001,
+        "median": 2.001,
+        "stddev": 0.0
+      },
+      "stats_cpu_sec": {
+        "min": 1.99,
+        "max": 1.994,
+        "mean": 1.992,
+        "median": 1.993,
+        "stddev": 0.001
+      },
+      "stats_usage_pct": {
+        "min": 99.5,
+        "max": 99.7,
+        "mean": 99.6,
+        "median": 99.6,
+        "stddev": 0.082
+      },
+      "raw_cpu_sec": [
+        1.99,
+        1.994,
+        1.993,
+        1.993,
+        1.994,
+        1.993,
+        1.991,
+        1.991,
+        1.992,
+        1.993
+      ],
+      "raw_usage_pct": [
+        99.5,
+        99.7,
+        99.6,
+        99.6,
+        99.7,
+        99.6,
+        99.5,
+        99.5,
+        99.6,
+        99.7
+      ],
+      "failures": []
+    },
+    "minibox_unconstrained": {
+      "target_sec": 2,
+      "trials_successful": 10,
+      "stats_wall_sec": {
+        "min": 2.002,
+        "max": 2.002,
+        "mean": 2.002,
+        "median": 2.002,
+        "stddev": 0.0
+      },
+      "stats_cpu_sec": {
+        "min": 1.992,
+        "max": 1.994,
+        "mean": 1.993,
+        "median": 1.993,
+        "stddev": 0.001
+      },
+      "stats_usage_pct": {
+        "min": 99.6,
+        "max": 99.7,
+        "mean": 99.64,
+        "median": 99.6,
+        "stddev": 0.052
+      },
+      "raw_cpu_sec": [
+        1.992,
+        1.993,
+        1.993,
+        1.992,
+        1.993,
+        1.993,
+        1.994,
+        1.994,
+        1.994,
+        1.993
+      ],
+      "raw_usage_pct": [
+        99.6,
+        99.6,
+        99.6,
+        99.6,
+        99.7,
+        99.6,
+        99.7,
+        99.7,
+        99.7,
+        99.6
+      ],
+      "failures": []
+    },
+    "minibox_quota_50pct": {
+      "target_sec": 2,
+      "trials_successful": 10,
+      "stats_wall_sec": {
+        "min": 2.007,
+        "max": 2.054,
+        "mean": 2.031,
+        "median": 2.03,
+        "stddev": 0.018
+      },
+      "stats_cpu_sec": {
+        "min": 0.999,
+        "max": 1.044,
+        "mean": 1.021,
+        "median": 1.018,
+        "stddev": 0.017
+      },
+      "stats_usage_pct": {
+        "min": 49.9,
+        "max": 51.2,
+        "mean": 50.58,
+        "median": 50.55,
+        "stddev": 0.478
+      },
+      "raw_cpu_sec": [
+        0.999,
+        1.012,
+        1.044,
+        1.043,
+        1.024,
+        1.007,
+        1.01,
+        1.041,
+        1.009,
+        1.023
+      ],
+      "raw_usage_pct": [
+        49.9,
+        50.3,
+        51.2,
+        51.0,
+        51.2,
+        50.1,
+        50.5,
+        50.9,
+        50.1,
+        50.6
+      ],
+      "failures": []
+    },
+    "minibox_quota_25pct": {
+      "target_sec": 2,
+      "trials_successful": 10,
+      "stats_wall_sec": {
+        "min": 2.012,
+        "max": 2.09,
+        "mean": 2.041,
+        "median": 2.036,
+        "stddev": 0.024
+      },
+      "stats_cpu_sec": {
+        "min": 0.503,
+        "max": 0.525,
+        "mean": 0.516,
+        "median": 0.518,
+        "stddev": 0.008
+      },
+      "stats_usage_pct": {
+        "min": 25.2,
+        "max": 26.0,
+        "mean": 25.46,
+        "median": 25.35,
+        "stddev": 0.267
+      },
+      "raw_cpu_sec": [
+        0.525,
+        0.505,
+        0.519,
+        0.521,
+        0.52,
+        0.524,
+        0.517,
+        0.517,
+        0.511,
+        0.503
+      ],
+      "raw_usage_pct": [
+        25.3,
+        25.2,
+        25.6,
+        25.8,
+        25.3,
+        26.0,
+        25.3,
+        25.5,
+        25.4,
+        25.2
+      ],
+      "failures": []
+    }
+  },
+  "memory": {
+    "performance_subceiling": {
+      "direct": {
+        "target_mb": 48,
+        "trials_successful": 10,
+        "stats_ms": {
+          "min": 516.057,
+          "max": 522.691,
+          "mean": 520.032,
+          "median": 520.193,
+          "stddev": 1.815
+        },
+        "raw_measurements_ms": [
+          519.918,
+          520.634,
+          522.691,
+          518.489,
+          519.885,
+          519.475,
+          521.223,
+          521.48,
+          520.468,
+          516.057
+        ],
+        "failures": []
+      },
+      "minibox_unconstrained": {
+        "target_mb": 48,
+        "trials_successful": 10,
+        "stats_ms": {
+          "min": 517.991,
+          "max": 521.893,
+          "mean": 520.127,
+          "median": 519.979,
+          "stddev": 1.223
+        },
+        "raw_measurements_ms": [
+          520.398,
+          520.668,
+          519.07,
+          517.991,
+          519.559,
+          521.893,
+          519.427,
+          519.543,
+          521.143,
+          521.578
+        ],
+        "failures": []
+      },
+      "minibox_limited_64M": {
+        "target_mb": 48,
+        "trials_successful": 10,
+        "stats_ms": {
+          "min": 525.937,
+          "max": 538.609,
+          "mean": 530.279,
+          "median": 528.412,
+          "stddev": 4.361
+        },
+        "raw_measurements_ms": [
+          528.15,
+          535.648,
+          526.687,
+          531.561,
+          525.937,
+          526.963,
+          538.609,
+          533.554,
+          528.674,
+          527.008
+        ],
+        "failures": []
+      }
+    },
+    "enforcement_overceiling": {
+      "requested_mb": 64,
+      "limit_mb": 16,
+      "runs": [
+        {
+          "duration_ms": 171.58,
+          "exit_code": 137,
+          "oom_killed_by_sigkill": true
+        },
+        {
+          "duration_ms": 176.6,
+          "exit_code": 137,
+          "oom_killed_by_sigkill": true
+        },
+        {
+          "duration_ms": 175.63,
+          "exit_code": 137,
+          "oom_killed_by_sigkill": true
+        },
+        {
+          "duration_ms": 170.62,
+          "exit_code": 137,
+          "oom_killed_by_sigkill": true
+        },
+        {
+          "duration_ms": 178.1,
+          "exit_code": 137,
+          "oom_killed_by_sigkill": true
+        }
+      ],
+      "enforcement_confirmed": true
+    }
+  },
+  "fork_spawning": {
+    "direct_10_forks": {
+      "trials": 10,
+      "exit_codes": [
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "expected_exit_code": 2,
+      "semantics_verified": true,
+      "stats_ms": {
+        "min": 501.509,
+        "max": 502.037,
+        "mean": 501.627,
+        "median": 501.595,
+        "stddev": 0.155
+      },
+      "raw_measurements_ms": [
+        501.646,
+        501.554,
+        501.61,
+        501.674,
+        502.037,
+        501.626,
+        501.514,
+        501.509,
+        501.581,
+        501.518
+      ]
+    },
+    "minibox_unconstrained": {
+      "trials": 10,
+      "exit_codes": [
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "expected_exit_code": 2,
+      "semantics_verified": true,
+      "stats_ms": {
+        "min": 502.008,
+        "max": 503.409,
+        "mean": 502.576,
+        "median": 502.553,
+        "stddev": 0.448
+      },
+      "raw_measurements_ms": [
+        502.566,
+        502.911,
+        502.855,
+        502.336,
+        502.911,
+        502.128,
+        502.54,
+        503.409,
+        502.008,
+        502.1
+      ]
+    },
+    "minibox_constrained_pids5": {
+      "trials": 10,
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "expected_exit_code": 0,
+      "semantics_verified": true,
+      "stats_ms": {
+        "min": 510.327,
+        "max": 516.978,
+        "mean": 512.547,
+        "median": 511.515,
+        "stddev": 2.491
+      },
+      "raw_measurements_ms": [
+        514.812,
+        510.381,
+        510.327,
+        511.538,
+        511.492,
+        510.641,
+        516.978,
+        515.964,
+        512.788,
+        510.555
+      ]
+    }
+  },
+  "lifecycle_latency": {
+    "trials_requested": 10,
+    "start_latency_ms": {
+      "min": 1.35,
+      "max": 1.722,
+      "mean": 1.446,
+      "median": 1.439,
+      "stddev": 0.106
+    },
+    "inspect_latency_ms": {
+      "min": 0.448,
+      "max": 0.718,
+      "mean": 0.622,
+      "median": 0.654,
+      "stddev": 0.094
+    },
+    "stop_latency_ms": {
+      "min": 40.808,
+      "max": 41.1,
+      "mean": 40.951,
+      "median": 40.966,
+      "stddev": 0.106
+    },
+    "cleanup_latency_ms": {
+      "min": 0.831,
+      "max": 5.84,
+      "mean": 1.396,
+      "median": 0.898,
+      "stddev": 1.562
+    },
+    "failures": []
+  }
+}
