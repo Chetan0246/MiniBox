@@ -18,14 +18,18 @@ static char g_minibox_cgroup_base[600] = {0};
 int minibox_parse_memory_size(const char *str, uint64_t *out_bytes) {
     if (!str || !out_bytes) return -1;
 
+    /* Skip leading whitespace */
+    while (*str && isspace((unsigned char)*str)) str++;
+    if (*str == '-' || *str == '+') return -1; /* Disallow signs */
+
     char *endptr = NULL;
     errno = 0;
     unsigned long long val = strtoull(str, &endptr, 10);
-    if (errno != 0 || endptr == str) {
+    if (errno != 0 || endptr == str || val == 0) {
         return -1;
     }
 
-    /* Skip leading whitespace in unit */
+    /* Skip whitespace before unit */
     while (*endptr && isspace((unsigned char)*endptr)) {
         endptr++;
     }
@@ -40,7 +44,12 @@ int minibox_parse_memory_size(const char *str, uint64_t *out_bytes) {
     } else if (strcasecmp(endptr, "g") == 0 || strcasecmp(endptr, "gb") == 0 || strcasecmp(endptr, "gib") == 0) {
         multiplier = 1024ULL * 1024ULL * 1024ULL;
     } else {
-        return -1; /* Unknown unit */
+        return -1; /* Unknown unit or trailing characters */
+    }
+
+    /* Check for multiplication overflow */
+    if (val > (UINT64_MAX / multiplier)) {
+        return -1;
     }
 
     *out_bytes = (uint64_t)val * multiplier;
@@ -205,12 +214,17 @@ int minibox_cgroup_setup_workload(const char *workload_id,
             fprintf(f, "%d\n", limits->pids_max);
             fclose(f);
             if (read_file_string(path, status->pids_max_readback, sizeof(status->pids_max_readback)) == 0) {
-                status->pids_applied = true;
+                char *end_p = NULL;
+                long read_pids = strtol(status->pids_max_readback, &end_p, 10);
+                if (read_pids == limits->pids_max) {
+                    status->pids_applied = true;
+                }
             }
         }
         if (!status->pids_applied) {
             snprintf(status->error_msg, sizeof(status->error_msg),
-                     "Failed to apply pids limit: %s", strerror(errno));
+                     "Failed to apply pids limit: readback ('%s') did not match requested %d",
+                     status->pids_max_readback[0] ? status->pids_max_readback : strerror(errno), limits->pids_max);
             return -1;
         }
     }
@@ -224,12 +238,17 @@ int minibox_cgroup_setup_workload(const char *workload_id,
             fprintf(f, "%lu\n", (unsigned long)limits->memory_max_bytes);
             fclose(f);
             if (read_file_string(path, status->memory_max_readback, sizeof(status->memory_max_readback)) == 0) {
-                status->memory_applied = true;
+                char *end_m = NULL;
+                unsigned long long read_mem = strtoull(status->memory_max_readback, &end_m, 10);
+                if (read_mem == limits->memory_max_bytes) {
+                    status->memory_applied = true;
+                }
             }
         }
         if (!status->memory_applied) {
             snprintf(status->error_msg, sizeof(status->error_msg),
-                     "Failed to apply memory limit: %s", strerror(errno));
+                     "Failed to apply memory limit: readback ('%s') did not match requested %lu bytes",
+                     status->memory_max_readback[0] ? status->memory_max_readback : strerror(errno), (unsigned long)limits->memory_max_bytes);
             return -1;
         }
 
@@ -253,12 +272,20 @@ int minibox_cgroup_setup_workload(const char *workload_id,
             fprintf(f, "%lu %d\n", (unsigned long)quota_us, MINIBOX_DEFAULT_CPU_PERIOD_US);
             fclose(f);
             if (read_file_string(path, status->cpu_max_readback, sizeof(status->cpu_max_readback)) == 0) {
-                status->cpu_applied = true;
+                unsigned long read_quota = 0;
+                unsigned long read_period = 0;
+                if (sscanf(status->cpu_max_readback, "%lu %lu", &read_quota, &read_period) == 2) {
+                    if (read_quota == quota_us && read_period == (unsigned long)MINIBOX_DEFAULT_CPU_PERIOD_US) {
+                        status->cpu_applied = true;
+                    }
+                }
             }
         }
         if (!status->cpu_applied) {
             snprintf(status->error_msg, sizeof(status->error_msg),
-                     "Failed to apply cpu limit: %s", strerror(errno));
+                     "Failed to apply cpu limit: readback ('%s') did not match requested quota %lu/%d",
+                     status->cpu_max_readback[0] ? status->cpu_max_readback : strerror(errno),
+                     (unsigned long)quota_us, MINIBOX_DEFAULT_CPU_PERIOD_US);
             return -1;
         }
     }

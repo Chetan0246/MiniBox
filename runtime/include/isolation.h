@@ -12,6 +12,18 @@ typedef struct {
     bool pid_ns_supported;
     bool mount_ns_supported;
     bool cgroups_v2_supported;
+    /* Granular capability inspection */
+    bool kernel_user_ns;
+    bool unprivileged_user_ns;
+    bool pid_ns_child_tested;
+    bool cgroup_v2_kernel;
+    bool cgroup_v2_delegated;
+    bool cgroup_cpu_controller;
+    bool cgroup_cpu_writable;
+    bool cgroup_memory_controller;
+    bool cgroup_memory_writable;
+    bool cgroup_pids_controller;
+    bool cgroup_pids_writable;
     char reason[256];
 } minibox_capabilities_t;
 

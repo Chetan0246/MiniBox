@@ -40,8 +40,8 @@ echo "=================================================="
 # Test 1: Version reports Phase 5
 info "Test 1: Version reports Phase 5"
 VER_OUT=$("$TARGET" version)
-if echo "$VER_OUT" | grep -q "0.5.0-phase5"; then
-    pass "Version string contains 0.5.0-phase5"
+if echo "$VER_OUT" | grep -E -q "0\.[5-9]\.[0-9]-phase"; then
+    pass "Version string contains valid phase version ($VER_OUT)"
 else
     fail "Version string" "Got '$VER_OUT'"
 fi

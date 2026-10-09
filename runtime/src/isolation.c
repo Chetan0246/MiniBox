@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #endif
 #include "isolation.h"
+#include "resources.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -22,10 +23,24 @@ int minibox_detect_capabilities(minibox_capabilities_t *caps) {
     }
     memset(caps, 0, sizeof(*caps));
 
+    /* 1. Kernel-level namespace support */
+    struct stat st;
+    if (stat("/proc/self/ns/user", &st) == 0) {
+        FILE *f_userns = fopen("/proc/sys/user/max_user_namespaces", "r");
+        if (f_userns) {
+            long max_user = 0;
+            if (fscanf(f_userns, "%ld", &max_user) == 1 && max_user > 0) {
+                caps->kernel_user_ns = true;
+            }
+            fclose(f_userns);
+        } else {
+            caps->kernel_user_ns = true;
+        }
+    }
+
     /*
-     * Probe namespaces non-destructively by running a fork probe.
-     * This checks if the kernel permits unprivileged user namespaces
-     * and subsequent UTS/PID/mount unsharing.
+     * 2. Probe unprivileged namespace operation and child initialization.
+     * Run in a separate probe process so the runtime state remains untouched.
      */
     pid_t probe_pid = fork();
     if (probe_pid == 0) {
@@ -34,7 +49,7 @@ int minibox_detect_capabilities(minibox_capabilities_t *caps) {
         gid_t gid = getgid();
 
         if (unshare(CLONE_NEWUSER) == 0) {
-            mask |= 1; /* User namespace supported */
+            mask |= 1; /* Unprivileged user namespace permitted */
 
             int fd = open("/proc/self/setgroups", O_WRONLY);
             if (fd >= 0) {
@@ -66,6 +81,21 @@ int minibox_detect_capabilities(minibox_capabilities_t *caps) {
             }
             if (unshare(CLONE_NEWPID) == 0) {
                 mask |= 4; /* PID namespace supported */
+
+                /* Verify child process initialization and PID 1 */
+                pid_t child_pid = fork();
+                if (child_pid == 0) {
+                    if (getpid() == 1) {
+                        _exit(42);
+                    }
+                    _exit(1);
+                } else if (child_pid > 0) {
+                    int cstat = 0;
+                    while (waitpid(child_pid, &cstat, 0) < 0 && errno == EINTR);
+                    if (WIFEXITED(cstat) && WEXITSTATUS(cstat) == 42) {
+                        mask |= 16; /* PID 1 verified */
+                    }
+                }
             }
             if (unshare(CLONE_NEWNS) == 0) {
                 mask |= 8; /* Mount namespace supported */
@@ -79,23 +109,78 @@ int minibox_detect_capabilities(minibox_capabilities_t *caps) {
         while (waitpid(probe_pid, &status, 0) < 0 && errno == EINTR);
         if (WIFEXITED(status)) {
             int mask = WEXITSTATUS(status);
-            caps->user_ns_supported = (mask & 1) != 0;
+            caps->unprivileged_user_ns = (mask & 1) != 0;
+            caps->user_ns_supported = caps->unprivileged_user_ns;
             caps->uts_ns_supported = (mask & 2) != 0;
             caps->pid_ns_supported = (mask & 4) != 0;
             caps->mount_ns_supported = (mask & 8) != 0;
+            caps->pid_ns_child_tested = (mask & 16) != 0;
         }
     }
 
-    /* Probe cgroup v2 */
-    struct stat st;
+    /* 3. Probe cgroup v2 kernel support */
     if (stat("/sys/fs/cgroup/cgroup.controllers", &st) == 0 ||
         stat("/sys/fs/cgroup/cgroup.procs", &st) == 0) {
-        caps->cgroups_v2_supported = true;
+        caps->cgroup_v2_kernel = true;
     }
 
-    if (caps->user_ns_supported && caps->uts_ns_supported) {
+    /* 4. Probe cgroup v2 delegated subtree and controller availability/writability */
+    char cg_root[600] = {0};
+    if (minibox_cgroup_find_root(cg_root, sizeof(cg_root)) == 0) {
+        caps->cgroup_v2_delegated = true;
+
+        /* Check controllers available in delegated base */
+        char ctrl_path[700];
+        snprintf(ctrl_path, sizeof(ctrl_path), "%s/cgroup.controllers", cg_root);
+        FILE *fc = fopen(ctrl_path, "r");
+        if (fc) {
+            char buf[256] = {0};
+            if (fgets(buf, sizeof(buf), fc)) {
+                caps->cgroup_cpu_controller = (strstr(buf, "cpu") != NULL);
+                caps->cgroup_memory_controller = (strstr(buf, "memory") != NULL);
+                caps->cgroup_pids_controller = (strstr(buf, "pids") != NULL);
+            }
+            fclose(fc);
+        }
+
+        /* Check controller writability via probe sub-cgroup */
+        char probe_cg[750];
+        snprintf(probe_cg, sizeof(probe_cg), "%s/probe_%u", cg_root, (unsigned int)getpid());
+        if (mkdir(probe_cg, 0755) == 0) {
+            char p[800];
+            snprintf(p, sizeof(p), "%s/pids.max", probe_cg);
+            FILE *f_test = fopen(p, "w");
+            if (f_test) {
+                if (fprintf(f_test, "max\n") > 0) caps->cgroup_pids_writable = true;
+                fclose(f_test);
+            }
+
+            snprintf(p, sizeof(p), "%s/memory.max", probe_cg);
+            f_test = fopen(p, "w");
+            if (f_test) {
+                if (fprintf(f_test, "max\n") > 0) caps->cgroup_memory_writable = true;
+                fclose(f_test);
+            }
+
+            snprintf(p, sizeof(p), "%s/cpu.max", probe_cg);
+            f_test = fopen(p, "w");
+            if (f_test) {
+                if (fprintf(f_test, "max 100000\n") > 0) caps->cgroup_cpu_writable = true;
+                fclose(f_test);
+            }
+
+            rmdir(probe_cg);
+        }
+    }
+
+    caps->cgroups_v2_supported = caps->cgroup_v2_kernel && caps->cgroup_v2_delegated;
+
+    if (caps->user_ns_supported && caps->uts_ns_supported && caps->pid_ns_child_tested) {
         snprintf(caps->reason, sizeof(caps->reason),
-                 "Linux namespaces (User, UTS, PID, Mount) and cgroups v2 are supported unprivileged.");
+                 "Linux namespaces (User, UTS, PID, Mount) verified with PID 1; cgroups v2 delegated.");
+    } else if (caps->user_ns_supported && caps->uts_ns_supported) {
+        snprintf(caps->reason, sizeof(caps->reason),
+                 "Linux namespaces (User, UTS) supported; PID/Mount partially available.");
     } else {
         snprintf(caps->reason, sizeof(caps->reason),
                  "Unprivileged user namespaces are restricted or unsupported on this kernel.");

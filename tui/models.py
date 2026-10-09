@@ -11,6 +11,7 @@ class Capabilities:
     mount_namespace: bool = False
     cgroups_v2: bool = False
     reason: str = ""
+    granular: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Capabilities":
@@ -21,6 +22,7 @@ class Capabilities:
             mount_namespace=bool(data.get("mount_namespace", False)),
             cgroups_v2=bool(data.get("cgroups_v2", False)),
             reason=data.get("reason", ""),
+            granular=data.get("granular", {}),
         )
 
 

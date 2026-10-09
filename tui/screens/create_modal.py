@@ -1,3 +1,4 @@
+import shlex
 from typing import Optional, Dict, Any
 from textual.app import ComposeResult
 from textual.containers import Vertical, Horizontal, VerticalScroll, Grid
@@ -155,7 +156,13 @@ class CreateWorkloadModal(ModalScreen[Optional[Dict[str, Any]]]):
             return
 
         args_str = self.query_one("#input-args", Input).value.strip()
-        args = args_str.split() if args_str else []
+        args = []
+        if args_str:
+            try:
+                args = shlex.split(args_str)
+            except ValueError as e:
+                err_lbl.update(f"Error: Malformed arguments quoting ({e}).")
+                return
 
         name = self.query_one("#input-name", Input).value.strip() or None
         workdir = self.query_one("#input-workdir", Input).value.strip() or None
@@ -166,8 +173,8 @@ class CreateWorkloadModal(ModalScreen[Optional[Dict[str, Any]]]):
         if cpu_val:
             try:
                 cpu_pct = int(cpu_val)
-                if cpu_pct < 0 or cpu_pct > 1000:
-                    err_lbl.update("Error: CPU quota percentage must be between 1 and 1000.")
+                if cpu_pct < 0 or cpu_pct > 10000:
+                    err_lbl.update("Error: CPU quota percentage must be between 1 and 10000.")
                     return
             except ValueError:
                 err_lbl.update("Error: CPU quota must be an integer.")
@@ -182,8 +189,8 @@ class CreateWorkloadModal(ModalScreen[Optional[Dict[str, Any]]]):
         if pids_val:
             try:
                 pids_max = int(pids_val)
-                if pids_max < 0:
-                    err_lbl.update("Error: Max PIDs must be positive integer.")
+                if pids_max < 0 or pids_max > 4194304:
+                    err_lbl.update("Error: Max PIDs must be positive integer up to 4194304.")
                     return
             except ValueError:
                 err_lbl.update("Error: Max PIDs must be an integer.")

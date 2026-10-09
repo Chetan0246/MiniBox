@@ -21,6 +21,33 @@ static uint64_t get_monotonic_usec(void) {
     return ((uint64_t)ts.tv_sec * 1000000ULL) + ((uint64_t)ts.tv_nsec / 1000ULL);
 }
 
+typedef struct {
+    unsigned long active_ticks;
+    unsigned long total_ticks;
+    uint64_t timestamp_usec;
+} host_cpu_sample_t;
+
+static host_cpu_sample_t g_last_host_cpu = {0};
+
+static int read_proc_stat_ticks(unsigned long *out_active, unsigned long *out_total) {
+    FILE *f = fopen("/proc/stat", "r");
+    if (!f) return -1;
+    char line[256];
+    if (!fgets(line, sizeof(line), f)) {
+        fclose(f);
+        return -1;
+    }
+    fclose(f);
+    unsigned long u = 0, n = 0, s = 0, idle = 0, io = 0, irq = 0, sirq = 0, steal = 0;
+    if (sscanf(line, "cpu %lu %lu %lu %lu %lu %lu %lu %lu",
+               &u, &n, &s, &idle, &io, &irq, &sirq, &steal) < 4) {
+        return -1;
+    }
+    *out_total = u + n + s + idle + io + irq + sirq + steal;
+    *out_active = u + n + s + irq + sirq + steal;
+    return 0;
+}
+
 int minibox_collect_host_metrics(minibox_host_metrics_t *out_host) {
     if (!out_host) {
         errno = EINVAL;
@@ -59,22 +86,58 @@ int minibox_collect_host_metrics(minibox_host_metrics_t *out_host) {
         fclose(f_load);
     }
 
-    /* 3. Sample host CPU from /proc/stat */
-    FILE *f_cpu = fopen("/proc/stat", "r");
-    if (f_cpu) {
-        char line[256];
-        if (fgets(line, sizeof(line), f_cpu)) {
-            unsigned long u = 0, n = 0, s = 0, idle = 0, io = 0, irq = 0, sirq = 0, steal = 0;
-            if (sscanf(line, "cpu %lu %lu %lu %lu %lu %lu %lu %lu",
-                       &u, &n, &s, &idle, &io, &irq, &sirq, &steal) >= 4) {
-                unsigned long total_ticks = u + n + s + idle + io + irq + sirq + steal;
-                unsigned long active_ticks = u + n + s + irq + sirq + steal;
-                if (total_ticks > 0) {
-                    out_host->cpu_percent = ((double)active_ticks / (double)total_ticks) * 100.0;
+    /* 3. Sample host live CPU% using delta measurements */
+    unsigned long active1 = 0, total1 = 0;
+    unsigned long active2 = 0, total2 = 0;
+    uint64_t now = get_monotonic_usec();
+
+    if (g_last_host_cpu.total_ticks == 0) {
+        /* Cold start: sample across a brief 50ms interval */
+        if (read_proc_stat_ticks(&active1, &total1) == 0) {
+            usleep(50000); /* 50 ms window */
+            if (read_proc_stat_ticks(&active2, &total2) == 0) {
+                unsigned long dt_total = (total2 >= total1) ? (total2 - total1) : 0;
+                unsigned long dt_active = (active2 >= active1) ? (active2 - active1) : 0;
+                if (dt_total > 0) {
+                    out_host->cpu_percent = ((double)dt_active / (double)dt_total) * 100.0;
+                }
+                g_last_host_cpu.active_ticks = active2;
+                g_last_host_cpu.total_ticks = total2;
+                g_last_host_cpu.timestamp_usec = get_monotonic_usec();
+            }
+        }
+    } else {
+        /* Successive call: check elapsed time since previous sample */
+        if (read_proc_stat_ticks(&active2, &total2) == 0) {
+            uint64_t dt_usec = (now > g_last_host_cpu.timestamp_usec) ?
+                               (now - g_last_host_cpu.timestamp_usec) : 0;
+            if (dt_usec >= 20000 && dt_usec <= 10000000ULL && total2 > g_last_host_cpu.total_ticks) {
+                /* Use delta against cached sample (e.g. within TUI refresh loop) */
+                unsigned long dt_total = total2 - g_last_host_cpu.total_ticks;
+                unsigned long dt_active = (active2 >= g_last_host_cpu.active_ticks) ?
+                                          (active2 - g_last_host_cpu.active_ticks) : 0;
+                if (dt_total > 0) {
+                    out_host->cpu_percent = ((double)dt_active / (double)dt_total) * 100.0;
+                }
+                g_last_host_cpu.active_ticks = active2;
+                g_last_host_cpu.total_ticks = total2;
+                g_last_host_cpu.timestamp_usec = now;
+            } else {
+                /* Sample afresh over 50ms window */
+                usleep(50000);
+                unsigned long active3 = 0, total3 = 0;
+                if (read_proc_stat_ticks(&active3, &total3) == 0) {
+                    unsigned long dt_total = (total3 >= total2) ? (total3 - total2) : 0;
+                    unsigned long dt_active = (active3 >= active2) ? (active3 - active2) : 0;
+                    if (dt_total > 0) {
+                        out_host->cpu_percent = ((double)dt_active / (double)dt_total) * 100.0;
+                    }
+                    g_last_host_cpu.active_ticks = active3;
+                    g_last_host_cpu.total_ticks = total3;
+                    g_last_host_cpu.timestamp_usec = get_monotonic_usec();
                 }
             }
         }
-        fclose(f_cpu);
     }
 
     out_host->valid = true;

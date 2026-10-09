@@ -108,7 +108,7 @@ The MiniBox architecture comprises three cleanly decoupled layers:
 
 ## 6. Testing & Quality Assurance
 
-The test framework incorporates 8 phases of automated regression testing executing over 70 distinct test assertions:
+The test framework incorporates 8 phases of automated regression testing plus a dedicated behavioral verification suite, executing 89 distinct test assertions with 100% success:
 - **Phase 1 (Process Launcher)**: 12/12 passed (valid runs, argument propagation, nonzero exit codes, invalid binaries, crash handling, zero zombies).
 - **Phase 2 (Lifecycle & State)**: 12/12 passed (state machine transitions, background daemonization, log persistence, inspect, stop, bulk cleanup).
 - **Phase 3 (Namespace Isolation)**: 9/9 passed (unprivileged user namespaces, UTS hostname isolation, PID 1 verification, mount isolation).
@@ -116,7 +116,8 @@ The test framework incorporates 8 phases of automated regression testing executi
 - **Phase 5 (Monitoring)**: 16/16 passed (host telemetry, dynamic CPU% rate calculation, RSS memory metrics, CFS throttle counters, exited workload handling).
 - **Phase 6 (Terminal UI)**: 6/6 passed (launcher execution, CLI help/version, Textual headless pilot testing across 7 async test cases).
 - **Phase 7 (Performance Evaluation)**: 5/5 passed (benchmark engine validation, schema verification, empirical assertions, zero leftovers).
-- **Phase 8 (Final Integration)**: Verified documentation deliverables, demonstration scenario execution, and clean compilation.
+- **Phase 8 (Final Integration)**: 5/5 passed (verified all 8 core documentation deliverables, 13-step demonstration scenario, zero lingering workloads).
+- **Behavioral Verification Suite**: 10/10 passed (isolated PID 1 execution, isolated CFS 50% quota throttling without race leaks, strict limit parameter bounds, kernel OOM SIGKILL, PID bomb EAGAIN defense, JSON escape resilience with quotes/backslashes/spaces, path traversal defense, live host CPU delta rate, granular capabilities, TUI quoting-aware argument splitting).
 
 ---
 
@@ -125,16 +126,17 @@ The test framework incorporates 8 phases of automated regression testing executi
 Performance benchmarks were executed across 10 trials on native hardware (AMD Ryzen 7, 16 cores, Fedora 44, Linux Kernel 7.1.13):
 
 1. **Launch Latency**:
-   - Direct Host: **0.65 ms**
-   - MiniBox Baseline: **1.14 ms** (+0.49 ms)
-   - MiniBox Namespaces: **1.59 ms** (+0.94 ms)
-   - MiniBox Full Isolation + cgroups v2: **1.97 ms** (+1.32 ms steady-state overhead)
-   - *Cold-Start Variance*: The initial cgroup directory creation incurs an ~18 ms penalty due to kernel tree sync; subsequent runs execute in under 2.0 ms.
+   - Direct Host: **0.65 ms** median (0.81 ms mean, 0.48–1.44 ms range)
+   - MiniBox Baseline: **1.14 ms** median (1.13 ms mean, 0.92–1.29 ms range)
+   - MiniBox Namespaces: **1.59 ms** median (1.62 ms mean, 1.32–2.11 ms range)
+   - MiniBox Full Isolation + cgroups v2: **1.97 ms** median (3.76 ms mean, 1.68–18.70 ms range; +1.32 ms steady-state overhead)
+   - *Cold-Start vs. Steady-State*: The initial invocation incurs an 18.70 ms operating system penalty for cgroup directory initialization and controller enabling; subsequent warm iterations complete in 1.68–2.23 ms (median 1.97 ms).
 2. **CFS CPU Quota Accuracy**:
-   - Configured 50% quota over a 2.0s observation window yielded **50.5%** median CPU utilization (1.02s CPU time granted over 2.03s wall time).
-   - Natural $\pm 0.8\%$ variation is attributable to the 100 ms period boundary quantization.
+   - Configured 50% quota over a 2.0s observation window yielded **50.55%** median utilization (50.58% mean, 1.02s CPU time granted over 2.03s wall time).
+   - Configured 25% quota yielded **25.35%** median utilization (25.46% mean, 0.52s CPU time granted over 2.04s wall time).
+   - Natural $\pm 0.8\%$ variation is attributable to the 100 ms period boundary quantization over the 20-period observation window.
 3. **Memory Hard Limit Enforcement**:
-   - Allocating 64 MiB under a 16 MiB ceiling with swap disabled reliably triggered kernel OOM `SIGKILL` (status code 137) in 100% of trials.
+   - Allocating 64 MiB under a 16 MiB ceiling with swap disabled reliably triggered kernel OOM `SIGKILL` (status code 137) in 100% of trials within ~175 ms.
 4. **PID Limits**:
    - Spawning 10 processes under `pids.max = 5` reliably triggered kernel rejection with `errno == EAGAIN` on the 5th child fork.
 

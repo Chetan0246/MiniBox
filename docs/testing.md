@@ -72,7 +72,11 @@ The project includes dedicated automated bash test suites executed via `make tes
 
 ### Phase 8: Final Integration & Documentation (`tests/test_phase8.sh`)
 - Verifies documentation completeness, user manual, architecture specs, viva preparation notes, demonstration scripts, clean builds, and acceptance criteria.
-- **Result**: 100% passed.
+- **Result**: 5/5 passed (100%).
+
+### Behavioral Verification Suite (`tests/test_behavioral.sh`)
+- Directly verifies PID 1 execution in PID namespaces, isolated CFS 50% CPU quota throttling without namespace race escapes, strict malformed/negative/zero/overflow input validation, kernel OOM memory killer termination, kernel PID fork bomb restriction (`EAGAIN`), JSON serialization resilience with special characters (quotes, backslashes, spaces), directory traversal rejection on deletion, live host CPU interval delta rate measurement, granular capability detection, and TUI quoting-aware argument splitting (`shlex.split`).
+- **Result**: 10/10 passed (100%).
 
 ---
 
@@ -83,4 +87,4 @@ To execute the complete test suite:
 make clean && make && make test
 ```
 
-All 8 test suites execute sequentially and report unambiguous PASS/FAIL status. Zero tests are mocked or bypassed.
+All 9 test suites execute sequentially and report unambiguous PASS/FAIL status across 89 verified test assertions. Zero tests are mocked or bypassed.

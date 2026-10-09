@@ -274,25 +274,38 @@ int minibox_run_workload_foreground(minibox_workload_t *wl,
                 if (cg_sync_pipe[0] >= 0) close(cg_sync_pipe[0]);
                 _exit(127);
             }
-            if (iso->enable_pid) {
-                pid_t pid1 = fork();
-                if (pid1 < 0) {
-                    int err = errno;
-                    (void)write(pipefd[1], &err, sizeof(err));
-                    close(pipefd[1]);
-                    if (cg_sync_pipe[0] >= 0) close(cg_sync_pipe[0]);
-                    _exit(127);
-                }
-                if (pid1 > 0) {
-                    int init_status = 0;
-                    while (waitpid(pid1, &init_status, 0) < 0 && errno == EINTR);
-                    if (WIFEXITED(init_status)) _exit(WEXITSTATUS(init_status));
-                    if (WIFSIGNALED(init_status)) _exit(128 + WTERMSIG(init_status));
-                    _exit(0);
-                }
-                if (iso->enable_mount) {
-                    (void)mount("proc", "/proc", "proc", 0, NULL);
-                }
+        }
+
+        /*
+         * Synchronize with parent launcher so this process is attached to the cgroup
+         * BEFORE creating child processes in the new PID namespace.
+         * In Linux, cgroup membership is inherited across fork(), ensuring that
+         * the new PID 1 process operates under the requested resource limits!
+         */
+        if (cg_sync_pipe[0] >= 0) {
+            char sync_byte = 0;
+            (void)read(cg_sync_pipe[0], &sync_byte, 1);
+            close(cg_sync_pipe[0]);
+            cg_sync_pipe[0] = -1;
+        }
+
+        if (iso && iso->enable_pid) {
+            pid_t pid1 = fork();
+            if (pid1 < 0) {
+                int err = errno;
+                (void)write(pipefd[1], &err, sizeof(err));
+                close(pipefd[1]);
+                _exit(127);
+            }
+            if (pid1 > 0) {
+                int init_status = 0;
+                while (waitpid(pid1, &init_status, 0) < 0 && errno == EINTR);
+                if (WIFEXITED(init_status)) _exit(WEXITSTATUS(init_status));
+                if (WIFSIGNALED(init_status)) _exit(128 + WTERMSIG(init_status));
+                _exit(0);
+            }
+            if (iso->enable_mount) {
+                (void)mount("proc", "/proc", "proc", 0, NULL);
             }
         }
 
@@ -301,7 +314,6 @@ int minibox_run_workload_foreground(minibox_workload_t *wl,
                 int err = errno;
                 (void)write(pipefd[1], &err, sizeof(err));
                 close(pipefd[1]);
-                if (cg_sync_pipe[0] >= 0) close(cg_sync_pipe[0]);
                 _exit(127);
             }
         }
@@ -311,16 +323,10 @@ int minibox_run_workload_foreground(minibox_workload_t *wl,
                 int err = errno;
                 (void)write(pipefd[1], &err, sizeof(err));
                 close(pipefd[1]);
-                if (cg_sync_pipe[0] >= 0) close(cg_sync_pipe[0]);
                 _exit(127);
             }
         }
 
-        if (cg_sync_pipe[0] >= 0) {
-            char sync_byte = 0;
-            (void)read(cg_sync_pipe[0], &sync_byte, 1);
-            close(cg_sync_pipe[0]);
-        }
 
         char *const default_argv[] = {wl->executable, NULL};
         char *const *exec_argv = argv ? argv : default_argv;
@@ -598,25 +604,36 @@ int minibox_start_workload_background(minibox_workload_t *wl,
                 if (cg_sync_pipe[0] >= 0) close(cg_sync_pipe[0]);
                 _exit(127);
             }
-            if (iso->enable_pid) {
-                pid_t pid1 = fork();
-                if (pid1 < 0) {
-                    int err = errno;
-                    (void)write(err_pipe[1], &err, sizeof(err));
-                    close(err_pipe[1]);
-                    if (cg_sync_pipe[0] >= 0) close(cg_sync_pipe[0]);
-                    _exit(127);
-                }
-                if (pid1 > 0) {
-                    int init_status = 0;
-                    while (waitpid(pid1, &init_status, 0) < 0 && errno == EINTR);
-                    if (WIFEXITED(init_status)) _exit(WEXITSTATUS(init_status));
-                    if (WIFSIGNALED(init_status)) _exit(128 + WTERMSIG(init_status));
-                    _exit(0);
-                }
-                if (iso->enable_mount) {
-                    (void)mount("proc", "/proc", "proc", 0, NULL);
-                }
+        }
+
+        /*
+         * Synchronize with parent supervisor so this process is attached to the cgroup
+         * BEFORE creating child processes in the new PID namespace.
+         */
+        if (cg_sync_pipe[0] >= 0) {
+            char sync_byte = 0;
+            (void)read(cg_sync_pipe[0], &sync_byte, 1);
+            close(cg_sync_pipe[0]);
+            cg_sync_pipe[0] = -1;
+        }
+
+        if (iso && iso->enable_pid) {
+            pid_t pid1 = fork();
+            if (pid1 < 0) {
+                int err = errno;
+                (void)write(err_pipe[1], &err, sizeof(err));
+                close(err_pipe[1]);
+                _exit(127);
+            }
+            if (pid1 > 0) {
+                int init_status = 0;
+                while (waitpid(pid1, &init_status, 0) < 0 && errno == EINTR);
+                if (WIFEXITED(init_status)) _exit(WEXITSTATUS(init_status));
+                if (WIFSIGNALED(init_status)) _exit(128 + WTERMSIG(init_status));
+                _exit(0);
+            }
+            if (iso->enable_mount) {
+                (void)mount("proc", "/proc", "proc", 0, NULL);
             }
         }
 
@@ -625,7 +642,6 @@ int minibox_start_workload_background(minibox_workload_t *wl,
                 int err = errno;
                 (void)write(err_pipe[1], &err, sizeof(err));
                 close(err_pipe[1]);
-                if (cg_sync_pipe[0] >= 0) close(cg_sync_pipe[0]);
                 _exit(127);
             }
         }
@@ -634,11 +650,6 @@ int minibox_start_workload_background(minibox_workload_t *wl,
         dup2(log_fd, STDERR_FILENO);
         close(log_fd);
 
-        if (cg_sync_pipe[0] >= 0) {
-            char sync_byte = 0;
-            (void)read(cg_sync_pipe[0], &sync_byte, 1);
-            close(cg_sync_pipe[0]);
-        }
 
         char *const default_argv[] = {wl->executable, NULL};
         char *const *exec_argv = argv ? argv : default_argv;

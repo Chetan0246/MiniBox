@@ -177,8 +177,8 @@ Measurements recorded across 10 empirical trials on native hardware (AMD Ryzen 7
 
 | Experiment | Metric | Direct Host | MiniBox Container | Measured Overhead |
 |---|---|---|---|---|
-| **Startup Overhead** | Minimal binary latency | 0.65 ms | 1.97 ms | **+1.32 ms** (steady-state) |
-| **CFS CPU Quota** | 50% target over 2.0s | 99.6% | 50.5% | $\pm 0.8\%$ quantization jitter |
+| **Startup Overhead** | Minimal binary latency | 0.65 ms (median) / 0.81 ms (mean) | 1.97 ms (median) / 3.76 ms (mean) | **+1.32 ms** (steady-state median; cold start: 18.7 ms) |
+| **CFS CPU Quota** | 50% target over 2.0s | 99.6% (median) | 50.55% (median) / 50.58% (mean) | $\pm 0.8\%$ quantization jitter |
 | **Memory Ceiling** | 64 MiB dirty under 16 MiB | N/A | SIGKILL (137) | **100% OOM Killed** |
 | **PID Fork Bomb** | 10 forks under `pids.max=5` | 10 forks (2) | 5th fork rejected (0) | **`errno == EAGAIN`** |
 | **Supervisor Start** | Background launch latency | N/A | 1.44 ms | Sub-2 ms daemonization |
@@ -189,21 +189,22 @@ Measurements recorded across 10 empirical trials on native hardware (AMD Ryzen 7
 
 ## Running the Automated Test Suite
 
-MiniBox includes comprehensive test suites covering all 8 phases of development:
+MiniBox includes comprehensive test suites covering all 8 phases of development plus behavioral hardening (89 passing tests):
 
 ```bash
-# Run all automated test suites (Phases 1 through 8)
+# Run all automated test suites (Phases 1 through 8 + Behavioral Verification)
 make test
 
 # Run individual test suites
-make test-phase1   # Process launcher and exit harvesting
-make test-phase2   # Lifecycle state machine and background supervisor
-make test-phase3   # Linux namespace isolation (UTS, User, PID, Mount)
-make test-phase4   # cgroups v2 resource limits (CPU, memory, PIDs)
-make test-phase5   # Telemetry and /proc metrics collection
-make test-phase6   # Terminal UI and Textual headless pilot tests
-make test-phase7   # Performance benchmarks and behavioral assertions
-make test-phase8   # Final integration, documentation, and demo verification
+make test-phase1       # Process launcher and exit harvesting
+make test-phase2       # Lifecycle state machine and background supervisor
+make test-phase3       # Linux namespace isolation (UTS, User, PID, Mount)
+make test-phase4       # cgroups v2 resource limits (CPU, memory, PIDs)
+make test-phase5       # Telemetry and /proc metrics collection
+make test-phase6       # Terminal UI and Textual headless pilot tests
+make test-phase7       # Performance benchmarks and behavioral assertions
+make test-phase8       # Final integration, documentation, and demo verification
+make test-behavioral   # Kernel isolation, strict validation, and security hardening
 
 # Execute the complete 13-step demonstration scenario
 make demo

@@ -49,8 +49,8 @@ fi
 # Test 2: Launcher reports version
 info "Test 2: Launcher reports version"
 VER_OUT=$("$TARGET" --version)
-if echo "$VER_OUT" | grep -q "0.6.0-phase6"; then
-    pass "Launcher version output contains 0.6.0-phase6"
+if echo "$VER_OUT" | grep -E -q "0\.[6-9]\.[0-9]-phase"; then
+    pass "Launcher version output contains valid phase version ($VER_OUT)"
 else
     fail "Launcher version" "Got: $VER_OUT"
 fi

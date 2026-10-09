@@ -51,7 +51,7 @@ static void print_usage(const char *progname) {
 }
 
 static void print_version(void) {
-    printf("%s version %s (Phase 5: Resource Monitoring & Metrics)\n", MINIBOX_PROGNAME, MINIBOX_VERSION);
+    printf("%s version %s (Phase 8: Final Integration & Educational Deliverables)\n", MINIBOX_PROGNAME, MINIBOX_VERSION);
 }
 
 static int cmd_capabilities(int argc, char *argv[]) {
@@ -73,18 +73,86 @@ static int cmd_capabilities(int argc, char *argv[]) {
         printf("  \"pid_namespace\": %s,\n", caps.pid_ns_supported ? "true" : "false");
         printf("  \"mount_namespace\": %s,\n", caps.mount_ns_supported ? "true" : "false");
         printf("  \"cgroups_v2\": %s,\n", caps.cgroups_v2_supported ? "true" : "false");
+        printf("  \"granular\": {\n");
+        printf("    \"kernel_user_ns\": %s,\n", caps.kernel_user_ns ? "true" : "false");
+        printf("    \"unprivileged_user_ns\": %s,\n", caps.unprivileged_user_ns ? "true" : "false");
+        printf("    \"pid_ns_child_tested\": %s,\n", caps.pid_ns_child_tested ? "true" : "false");
+        printf("    \"cgroup_v2_kernel\": %s,\n", caps.cgroup_v2_kernel ? "true" : "false");
+        printf("    \"cgroup_v2_delegated\": %s,\n", caps.cgroup_v2_delegated ? "true" : "false");
+        printf("    \"cgroup_cpu_controller\": %s,\n", caps.cgroup_cpu_controller ? "true" : "false");
+        printf("    \"cgroup_cpu_writable\": %s,\n", caps.cgroup_cpu_writable ? "true" : "false");
+        printf("    \"cgroup_memory_controller\": %s,\n", caps.cgroup_memory_controller ? "true" : "false");
+        printf("    \"cgroup_memory_writable\": %s,\n", caps.cgroup_memory_writable ? "true" : "false");
+        printf("    \"cgroup_pids_controller\": %s,\n", caps.cgroup_pids_controller ? "true" : "false");
+        printf("    \"cgroup_pids_writable\": %s\n", caps.cgroup_pids_writable ? "true" : "false");
+        printf("  },\n");
         printf("  \"reason\": \"%s\"\n", caps.reason);
         printf("}\n");
     } else {
         printf("MiniBox Linux Capability Report:\n");
-        printf("  User Namespaces:  %s\n", caps.user_ns_supported ? "AVAILABLE" : "UNAVAILABLE");
-        printf("  UTS Namespace:    %s\n", caps.uts_ns_supported ? "AVAILABLE" : "UNAVAILABLE");
-        printf("  PID Namespace:    %s\n", caps.pid_ns_supported ? "AVAILABLE" : "UNAVAILABLE");
-        printf("  Mount Namespace:  %s\n", caps.mount_ns_supported ? "AVAILABLE" : "UNAVAILABLE");
-        printf("  cgroups v2:       %s\n", caps.cgroups_v2_supported ? "AVAILABLE" : "UNAVAILABLE");
-        printf("  Summary:          %s\n", caps.reason);
+        printf("  User Namespaces:           %s (kernel: %s, unprivileged: %s)\n",
+               caps.user_ns_supported ? "AVAILABLE" : "UNAVAILABLE",
+               caps.kernel_user_ns ? "yes" : "no",
+               caps.unprivileged_user_ns ? "yes" : "no");
+        printf("  UTS Namespace:             %s\n", caps.uts_ns_supported ? "AVAILABLE" : "UNAVAILABLE");
+        printf("  PID Namespace:             %s (child PID 1 tested: %s)\n",
+               caps.pid_ns_supported ? "AVAILABLE" : "UNAVAILABLE",
+               caps.pid_ns_child_tested ? "yes" : "no");
+        printf("  Mount Namespace:           %s\n", caps.mount_ns_supported ? "AVAILABLE" : "UNAVAILABLE");
+        printf("  cgroups v2:                %s (kernel: %s, delegated: %s)\n",
+               caps.cgroups_v2_supported ? "AVAILABLE" : "UNAVAILABLE",
+               caps.cgroup_v2_kernel ? "yes" : "no",
+               caps.cgroup_v2_delegated ? "yes" : "no");
+        printf("  cgroup Controllers:\n");
+        printf("    CPU:                     %s (writable: %s)\n",
+               caps.cgroup_cpu_controller ? "AVAILABLE" : "UNAVAILABLE",
+               caps.cgroup_cpu_writable ? "yes" : "no");
+        printf("    Memory:                  %s (writable: %s)\n",
+               caps.cgroup_memory_controller ? "AVAILABLE" : "UNAVAILABLE",
+               caps.cgroup_memory_writable ? "yes" : "no");
+        printf("    PIDs:                    %s (writable: %s)\n",
+               caps.cgroup_pids_controller ? "AVAILABLE" : "UNAVAILABLE",
+               caps.cgroup_pids_writable ? "yes" : "no");
+        printf("  Summary:                   %s\n", caps.reason);
     }
     return 0;
+}
+
+static int parse_strict_positive_int(const char *str, int min_val, int max_val, int *out) {
+    if (!str || !*str || !out) return -1;
+    if (*str < '0' || *str > '9') return -1;
+    char *endptr = NULL;
+    errno = 0;
+    long val = strtol(str, &endptr, 10);
+    if (errno != 0 || endptr == str || *endptr != '\0') return -1;
+    if (val < min_val || val > max_val) return -1;
+    *out = (int)val;
+    return 0;
+}
+
+static void print_json_string_field(const char *prefix, const char *key, const char *val, bool trailing_comma) {
+    printf("%s\"%s\": \"", prefix ? prefix : "", key);
+    if (val) {
+        for (const char *p = val; *p; p++) {
+            switch (*p) {
+                case '\"': fputs("\\\"", stdout); break;
+                case '\\': fputs("\\\\", stdout); break;
+                case '\b': fputs("\\b", stdout); break;
+                case '\f': fputs("\\f", stdout); break;
+                case '\n': fputs("\\n", stdout); break;
+                case '\r': fputs("\\r", stdout); break;
+                case '\t': fputs("\\t", stdout); break;
+                default:
+                    if ((unsigned char)*p < 0x20) {
+                        printf("\\u%04x", (unsigned char)*p);
+                    } else {
+                        putchar(*p);
+                    }
+                    break;
+            }
+        }
+    }
+    printf("\"%s\n", trailing_comma ? "," : "");
 }
 
 static int cmd_run(int argc, char *argv[]) {
@@ -126,9 +194,9 @@ static int cmd_run(int argc, char *argv[]) {
                 fprintf(stderr, "Error: --cpu requires a percentage argument\n");
                 return 1;
             }
-            int cpu_pct = atoi(argv[exec_index + 1]);
-            if (cpu_pct <= 0) {
-                fprintf(stderr, "Error: Invalid CPU percentage '%s' (must be > 0)\n", argv[exec_index + 1]);
+            int cpu_pct = 0;
+            if (parse_strict_positive_int(argv[exec_index + 1], 1, 10000, &cpu_pct) != 0) {
+                fprintf(stderr, "Error: Invalid CPU percentage '%s' (must be an integer between 1 and 10000)\n", argv[exec_index + 1]);
                 return 1;
             }
             limits.cpu_percent = cpu_pct;
@@ -150,9 +218,9 @@ static int cmd_run(int argc, char *argv[]) {
                 fprintf(stderr, "Error: --pids requires a max pids argument\n");
                 return 1;
             }
-            int pids_max = atoi(argv[exec_index + 1]);
-            if (pids_max <= 0) {
-                fprintf(stderr, "Error: Invalid max pids '%s' (must be > 0)\n", argv[exec_index + 1]);
+            int pids_max = 0;
+            if (parse_strict_positive_int(argv[exec_index + 1], 1, 4194304, &pids_max) != 0) {
+                fprintf(stderr, "Error: Invalid max pids '%s' (must be an integer between 1 and 4194304)\n", argv[exec_index + 1]);
                 return 1;
             }
             limits.pids_max = pids_max;
@@ -214,8 +282,8 @@ static int cmd_run(int argc, char *argv[]) {
     if (json_output) {
         printf("{\n");
         printf("  \"ok\": %s,\n", (wl.state == MINIBOX_STATE_COMPLETED || wl.state == MINIBOX_STATE_TERMINATED) ? "true" : "false");
-        printf("  \"workload_id\": \"%s\",\n", wl.id);
-        printf("  \"name\": \"%s\",\n", wl.name);
+        print_json_string_field("  ", "workload_id", wl.id, true);
+        print_json_string_field("  ", "name", wl.name, true);
         printf("  \"pid\": %d,\n", wl.pid);
         printf("  \"state\": \"%s\",\n", minibox_state_to_string(wl.state));
         printf("  \"status\": \"%s\",\n", minibox_state_to_string(wl.state));
@@ -224,7 +292,7 @@ static int cmd_run(int argc, char *argv[]) {
         printf("  \"errno\": %d,\n", wl.exec_errno);
         printf("  \"exec_errno\": %d,\n", wl.exec_errno);
         printf("  \"iso_uts\": %s,\n", wl.iso_uts ? "true" : "false");
-        printf("  \"iso_hostname\": \"%s\",\n", wl.iso_hostname);
+        print_json_string_field("  ", "iso_hostname", wl.iso_hostname, true);
         printf("  \"iso_pid\": %s,\n", wl.iso_pid ? "true" : "false");
         printf("  \"iso_mount\": %s,\n", wl.iso_mount ? "true" : "false");
         printf("  \"limits\": {\n");
@@ -232,10 +300,10 @@ static int cmd_run(int argc, char *argv[]) {
         printf("    \"memory_max_bytes\": %lu,\n", (unsigned long)wl.limits.memory_max_bytes);
         printf("    \"pids_max\": %d\n", wl.limits.pids_max);
         printf("  },\n");
-        printf("  \"cgroup_path\": \"%s\",\n", wl.cgroup_path);
+        print_json_string_field("  ", "cgroup_path", wl.cgroup_path, true);
         printf("  \"cgroup_active\": %s,\n", wl.cgroup_active ? "true" : "false");
         if (wl.error_msg[0]) {
-            printf("  \"error\": \"%s\"\n", wl.error_msg);
+            print_json_string_field("  ", "error", wl.error_msg, false);
         } else {
             printf("  \"error\": null\n");
         }
@@ -299,9 +367,9 @@ static int cmd_start(int argc, char *argv[]) {
                 fprintf(stderr, "Error: --cpu requires a percentage argument\n");
                 return 1;
             }
-            int cpu_pct = atoi(argv[exec_index + 1]);
-            if (cpu_pct <= 0) {
-                fprintf(stderr, "Error: Invalid CPU percentage '%s' (must be > 0)\n", argv[exec_index + 1]);
+            int cpu_pct = 0;
+            if (parse_strict_positive_int(argv[exec_index + 1], 1, 10000, &cpu_pct) != 0) {
+                fprintf(stderr, "Error: Invalid CPU percentage '%s' (must be an integer between 1 and 10000)\n", argv[exec_index + 1]);
                 return 1;
             }
             limits.cpu_percent = cpu_pct;
@@ -323,9 +391,9 @@ static int cmd_start(int argc, char *argv[]) {
                 fprintf(stderr, "Error: --pids requires a max pids argument\n");
                 return 1;
             }
-            int pids_max = atoi(argv[exec_index + 1]);
-            if (pids_max <= 0) {
-                fprintf(stderr, "Error: Invalid max pids '%s' (must be > 0)\n", argv[exec_index + 1]);
+            int pids_max = 0;
+            if (parse_strict_positive_int(argv[exec_index + 1], 1, 4194304, &pids_max) != 0) {
+                fprintf(stderr, "Error: Invalid max pids '%s' (must be an integer between 1 and 4194304)\n", argv[exec_index + 1]);
                 return 1;
             }
             limits.pids_max = pids_max;
@@ -381,13 +449,13 @@ static int cmd_start(int argc, char *argv[]) {
     if (json_output) {
         printf("{\n");
         printf("  \"ok\": %s,\n", (rc == 0 && wl.state == MINIBOX_STATE_RUNNING) ? "true" : "false");
-        printf("  \"workload_id\": \"%s\",\n", wl.id);
-        printf("  \"name\": \"%s\",\n", wl.name);
+        print_json_string_field("  ", "workload_id", wl.id, true);
+        print_json_string_field("  ", "name", wl.name, true);
         printf("  \"pid\": %d,\n", wl.pid);
         printf("  \"supervisor_pid\": %d,\n", wl.supervisor_pid);
         printf("  \"state\": \"%s\",\n", minibox_state_to_string(wl.state));
         printf("  \"iso_uts\": %s,\n", wl.iso_uts ? "true" : "false");
-        printf("  \"iso_hostname\": \"%s\",\n", wl.iso_hostname);
+        print_json_string_field("  ", "iso_hostname", wl.iso_hostname, true);
         printf("  \"iso_pid\": %s,\n", wl.iso_pid ? "true" : "false");
         printf("  \"iso_mount\": %s,\n", wl.iso_mount ? "true" : "false");
         printf("  \"limits\": {\n");
@@ -395,11 +463,11 @@ static int cmd_start(int argc, char *argv[]) {
         printf("    \"memory_max_bytes\": %lu,\n", (unsigned long)wl.limits.memory_max_bytes);
         printf("    \"pids_max\": %d\n", wl.limits.pids_max);
         printf("  },\n");
-        printf("  \"cgroup_path\": \"%s\",\n", wl.cgroup_path);
+        print_json_string_field("  ", "cgroup_path", wl.cgroup_path, true);
         printf("  \"cgroup_active\": %s,\n", wl.cgroup_active ? "true" : "false");
-        printf("  \"log_file\": \"%s\",\n", wl.log_file);
+        print_json_string_field("  ", "log_file", wl.log_file, true);
         if (wl.state == MINIBOX_STATE_FAILED) {
-            printf("  \"error\": \"%s\",\n", wl.error_msg[0] ? wl.error_msg : strerror(wl.exec_errno));
+            print_json_string_field("  ", "error", wl.error_msg[0] ? wl.error_msg : strerror(wl.exec_errno), true);
             printf("  \"errno\": %d\n", wl.exec_errno);
         } else {
             printf("  \"error\": null\n");
@@ -448,12 +516,12 @@ static int cmd_list(int argc, char *argv[]) {
         printf("[\n");
         for (size_t i = 0; i < count; i++) {
             printf("  {\n");
-            printf("    \"id\": \"%s\",\n", workloads[i].id);
-            printf("    \"name\": \"%s\",\n", workloads[i].name);
+            print_json_string_field("    ", "id", workloads[i].id, true);
+            print_json_string_field("    ", "name", workloads[i].name, true);
             printf("    \"state\": \"%s\",\n", minibox_state_to_string(workloads[i].state));
             printf("    \"pid\": %d,\n", workloads[i].pid);
             printf("    \"supervisor_pid\": %d,\n", workloads[i].supervisor_pid);
-            printf("    \"executable\": \"%s\",\n", workloads[i].executable);
+            print_json_string_field("    ", "executable", workloads[i].executable, true);
             printf("    \"exit_code\": %d,\n", workloads[i].exit_code);
             printf("    \"term_signal\": %d,\n", workloads[i].term_signal);
             printf("    \"iso_uts\": %s,\n", workloads[i].iso_uts ? "true" : "false");
@@ -524,24 +592,24 @@ static int cmd_inspect(int argc, char *argv[]) {
     if (json_output) {
         printf("{\n");
         printf("  \"ok\": true,\n");
-        printf("  \"id\": \"%s\",\n", wl.id);
-        printf("  \"name\": \"%s\",\n", wl.name);
+        print_json_string_field("  ", "id", wl.id, true);
+        print_json_string_field("  ", "name", wl.name, true);
         printf("  \"state\": \"%s\",\n", minibox_state_to_string(wl.state));
         printf("  \"pid\": %d,\n", wl.pid);
         printf("  \"supervisor_pid\": %d,\n", wl.supervisor_pid);
-        printf("  \"executable\": \"%s\",\n", wl.executable);
-        printf("  \"args\": \"%s\",\n", wl.args);
-        printf("  \"work_dir\": \"%s\",\n", wl.work_dir);
+        print_json_string_field("  ", "executable", wl.executable, true);
+        print_json_string_field("  ", "args", wl.args, true);
+        print_json_string_field("  ", "work_dir", wl.work_dir, true);
         printf("  \"created_at_ms\": %lu,\n", (unsigned long)wl.created_at_ms);
         printf("  \"started_at_ms\": %lu,\n", (unsigned long)wl.started_at_ms);
         printf("  \"finished_at_ms\": %lu,\n", (unsigned long)wl.finished_at_ms);
         printf("  \"exit_code\": %d,\n", wl.exit_code);
         printf("  \"term_signal\": %d,\n", wl.term_signal);
         printf("  \"exec_errno\": %d,\n", wl.exec_errno);
-        printf("  \"error_msg\": \"%s\",\n", wl.error_msg);
-        printf("  \"log_file\": \"%s\",\n", wl.log_file);
+        print_json_string_field("  ", "error_msg", wl.error_msg, true);
+        print_json_string_field("  ", "log_file", wl.log_file, true);
         printf("  \"iso_uts\": %s,\n", wl.iso_uts ? "true" : "false");
-        printf("  \"iso_hostname\": \"%s\",\n", wl.iso_hostname);
+        print_json_string_field("  ", "iso_hostname", wl.iso_hostname, true);
         printf("  \"iso_pid\": %s,\n", wl.iso_pid ? "true" : "false");
         printf("  \"iso_mount\": %s,\n", wl.iso_mount ? "true" : "false");
         printf("  \"limits\": {\n");
@@ -549,7 +617,7 @@ static int cmd_inspect(int argc, char *argv[]) {
         printf("    \"memory_max_bytes\": %lu,\n", (unsigned long)wl.limits.memory_max_bytes);
         printf("    \"pids_max\": %d\n", wl.limits.pids_max);
         printf("  },\n");
-        printf("  \"cgroup_path\": \"%s\",\n", wl.cgroup_path);
+        print_json_string_field("  ", "cgroup_path", wl.cgroup_path, true);
         printf("  \"cgroup_active\": %s\n", wl.cgroup_active ? "true" : "false");
         printf("}\n");
     } else {
@@ -599,8 +667,8 @@ static int cmd_inspect(int argc, char *argv[]) {
 static void print_workload_metrics_json(const minibox_workload_metrics_t *m, bool include_host) {
     printf("{\n");
     printf("  \"ok\": true,\n");
-    printf("  \"workload_id\": \"%s\",\n", m->workload_id);
-    printf("  \"name\": \"%s\",\n", m->name);
+    print_json_string_field("  ", "workload_id", m->workload_id, true);
+    print_json_string_field("  ", "name", m->name, true);
     printf("  \"pid\": %d,\n", m->pid);
     printf("  \"supervisor_pid\": %d,\n", m->supervisor_pid);
     printf("  \"state\": \"%s\",\n", minibox_state_to_string(m->state));
@@ -765,8 +833,8 @@ static int cmd_metrics(int argc, char *argv[]) {
             minibox_workload_metrics_t wm;
             minibox_collect_workload_metrics(workloads[i].id, 0, &wm);
             printf("    {\n");
-            printf("      \"id\": \"%s\",\n", wm.workload_id);
-            printf("      \"name\": \"%s\",\n", wm.name);
+            print_json_string_field("      ", "id", wm.workload_id, true);
+            print_json_string_field("      ", "name", wm.name, true);
             printf("      \"state\": \"%s\",\n", minibox_state_to_string(wm.state));
             printf("      \"active\": %s,\n", wm.active ? "true" : "false");
             printf("      \"pid\": %d,\n", wm.pid);

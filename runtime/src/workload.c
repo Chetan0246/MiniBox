@@ -5,9 +5,11 @@
 #include "lifecycle.h"
 #include "resources.h"
 
+#include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -66,11 +68,50 @@ const char *minibox_get_state_dir(void) {
     return g_state_dir;
 }
 
+static bool is_safe_workload_id(const char *id) {
+    if (!id || *id == 0 || strlen(id) > 64) return false;
+    if (strcmp(id, ".") == 0 || strcmp(id, "..") == 0) return false;
+    if (strstr(id, "..") != NULL || strchr(id, '/') != NULL || strchr(id, '\\') != NULL) return false;
+    for (const char *p = id; *p; p++) {
+        if (!isalnum((unsigned char)*p) && *p != '-' && *p != '_' && *p != '.') {
+            return false;
+        }
+    }
+    return true;
+}
+
 void minibox_generate_workload_id(char *out_id, size_t max_len) {
-    static unsigned int counter = 0;
-    counter++;
-    uint64_t now = minibox_current_time_ms();
-    snprintf(out_id, max_len, "wl-%lx%04x", (unsigned long)(now & 0xFFFFFFFF), (counter + (unsigned int)getpid()) & 0xFFFF);
+    if (!out_id || max_len < 32) return;
+    const char *base = minibox_get_state_dir();
+
+    for (int attempts = 0; attempts < 100; attempts++) {
+        unsigned int rand_val = 0;
+        int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+        if (fd >= 0) {
+            if (read(fd, &rand_val, sizeof(rand_val)) != sizeof(rand_val)) {
+                rand_val = (unsigned int)rand();
+            }
+            close(fd);
+        } else {
+            rand_val = (unsigned int)rand() ^ (unsigned int)getpid();
+        }
+
+        uint64_t now = minibox_current_time_ms();
+        static unsigned int counter = 0;
+        counter++;
+
+        snprintf(out_id, max_len, "wl-%lx%04x%04x",
+                 (unsigned long)(now & 0xFFFFFFFF),
+                 (counter + (unsigned int)getpid()) & 0xFFFF,
+                 rand_val & 0xFFFF);
+
+        char check_path[MINIBOX_MAX_PATH_LEN];
+        snprintf(check_path, sizeof(check_path), "%s/%s", base, out_id);
+        struct stat st;
+        if (stat(check_path, &st) != 0 && errno == ENOENT) {
+            return;
+        }
+    }
 }
 
 int minibox_workload_init(minibox_workload_t *wl,
@@ -85,6 +126,10 @@ int minibox_workload_init(minibox_workload_t *wl,
     memset(wl, 0, sizeof(*wl));
 
     if (requested_id && strlen(requested_id) > 0) {
+        if (!is_safe_workload_id(requested_id)) {
+            errno = EINVAL;
+            return -1;
+        }
         snprintf(wl->id, sizeof(wl->id), "%s", requested_id);
     } else {
         minibox_generate_workload_id(wl->id, sizeof(wl->id));
@@ -134,6 +179,31 @@ int minibox_workload_init(minibox_workload_t *wl,
     return 0;
 }
 
+static void write_json_escaped_string(FILE *f, const char *key, const char *val, bool trailing_comma) {
+    fprintf(f, "  \"%s\": \"", key);
+    if (val) {
+        for (const char *p = val; *p; p++) {
+            switch (*p) {
+                case '\"': fputs("\\\"", f); break;
+                case '\\': fputs("\\\\", f); break;
+                case '\b': fputs("\\b", f); break;
+                case '\f': fputs("\\f", f); break;
+                case '\n': fputs("\\n", f); break;
+                case '\r': fputs("\\r", f); break;
+                case '\t': fputs("\\t", f); break;
+                default:
+                    if ((unsigned char)*p < 0x20) {
+                        fprintf(f, "\\u%04x", (unsigned char)*p);
+                    } else {
+                        fputc(*p, f);
+                    }
+                    break;
+            }
+        }
+    }
+    fprintf(f, "\"%s\n", trailing_comma ? "," : "");
+}
+
 int minibox_workload_save(const minibox_workload_t *wl) {
     if (!wl || wl->id[0] == 0) return -1;
 
@@ -151,30 +221,30 @@ int minibox_workload_save(const minibox_workload_t *wl) {
     if (!f) return -1;
 
     fprintf(f, "{\n");
-    fprintf(f, "  \"id\": \"%s\",\n", wl->id);
-    fprintf(f, "  \"name\": \"%s\",\n", wl->name);
-    fprintf(f, "  \"state\": \"%s\",\n", minibox_state_to_string(wl->state));
+    write_json_escaped_string(f, "id", wl->id, true);
+    write_json_escaped_string(f, "name", wl->name, true);
+    write_json_escaped_string(f, "state", minibox_state_to_string(wl->state), true);
     fprintf(f, "  \"pid\": %d,\n", wl->pid);
     fprintf(f, "  \"supervisor_pid\": %d,\n", wl->supervisor_pid);
-    fprintf(f, "  \"executable\": \"%s\",\n", wl->executable);
-    fprintf(f, "  \"args\": \"%s\",\n", wl->args);
-    fprintf(f, "  \"work_dir\": \"%s\",\n", wl->work_dir);
+    write_json_escaped_string(f, "executable", wl->executable, true);
+    write_json_escaped_string(f, "args", wl->args, true);
+    write_json_escaped_string(f, "work_dir", wl->work_dir, true);
     fprintf(f, "  \"created_at_ms\": %lu,\n", (unsigned long)wl->created_at_ms);
     fprintf(f, "  \"started_at_ms\": %lu,\n", (unsigned long)wl->started_at_ms);
     fprintf(f, "  \"finished_at_ms\": %lu,\n", (unsigned long)wl->finished_at_ms);
     fprintf(f, "  \"exit_code\": %d,\n", wl->exit_code);
     fprintf(f, "  \"term_signal\": %d,\n", wl->term_signal);
     fprintf(f, "  \"exec_errno\": %d,\n", wl->exec_errno);
-    fprintf(f, "  \"error_msg\": \"%s\",\n", wl->error_msg);
-    fprintf(f, "  \"log_file\": \"%s\",\n", wl->log_file);
+    write_json_escaped_string(f, "error_msg", wl->error_msg, true);
+    write_json_escaped_string(f, "log_file", wl->log_file, true);
     fprintf(f, "  \"iso_uts\": %s,\n", wl->iso_uts ? "true" : "false");
-    fprintf(f, "  \"iso_hostname\": \"%s\",\n", wl->iso_hostname);
+    write_json_escaped_string(f, "iso_hostname", wl->iso_hostname, true);
     fprintf(f, "  \"iso_pid\": %s,\n", wl->iso_pid ? "true" : "false");
     fprintf(f, "  \"iso_mount\": %s,\n", wl->iso_mount ? "true" : "false");
     fprintf(f, "  \"cpu_percent\": %d,\n", wl->limits.cpu_percent);
     fprintf(f, "  \"memory_max_bytes\": %lu,\n", (unsigned long)wl->limits.memory_max_bytes);
     fprintf(f, "  \"pids_max\": %d,\n", wl->limits.pids_max);
-    fprintf(f, "  \"cgroup_path\": \"%s\",\n", wl->cgroup_path);
+    write_json_escaped_string(f, "cgroup_path", wl->cgroup_path, true);
     fprintf(f, "  \"cgroup_active\": %s\n", wl->cgroup_active ? "true" : "false");
     fprintf(f, "}\n");
 
@@ -189,11 +259,12 @@ int minibox_workload_save(const minibox_workload_t *wl) {
 }
 
 static void parse_json_string(const char *json, const char *key, char *out, size_t max_len) {
+    if (!out || max_len == 0) return;
+    out[0] = 0;
     char search[128];
     snprintf(search, sizeof(search), "\"%s\": \"", key);
     const char *p = strstr(json, search);
     if (!p) {
-        out[0] = 0;
         return;
     }
     p += strlen(search);
@@ -201,8 +272,21 @@ static void parse_json_string(const char *json, const char *key, char *out, size
     while (*p && *p != '\"' && i + 1 < max_len) {
         if (*p == '\\' && *(p + 1)) {
             p++;
+            switch (*p) {
+                case '\"': out[i++] = '\"'; break;
+                case '\\': out[i++] = '\\'; break;
+                case '/':  out[i++] = '/'; break;
+                case 'b':  out[i++] = '\b'; break;
+                case 'f':  out[i++] = '\f'; break;
+                case 'n':  out[i++] = '\n'; break;
+                case 'r':  out[i++] = '\r'; break;
+                case 't':  out[i++] = '\t'; break;
+                default:   out[i++] = *p; break;
+            }
+            p++;
+        } else {
+            out[i++] = *p++;
         }
-        out[i++] = *p++;
     }
     out[i] = 0;
 }
@@ -373,7 +457,10 @@ static int remove_directory_recursive(const char *path) {
 }
 
 int minibox_workload_delete(const char *id, bool force) {
-    if (!id) return -1;
+    if (!id || !is_safe_workload_id(id)) {
+        errno = EINVAL;
+        return -1;
+    }
 
     minibox_workload_t wl;
     if (minibox_workload_load(id, &wl) != 0) {
@@ -386,20 +473,43 @@ int minibox_workload_delete(const char *id, bool force) {
             errno = EBUSY;
             return -1;
         }
-        /* If force, send SIGKILL to terminate */
-        if (wl.pid > 0) {
+        /* If force, send SIGKILL to terminate (never host PID <= 1) */
+        if (wl.pid > 1) {
             kill(wl.pid, SIGKILL);
         }
     }
 
     int cg_rc = 0;
     if (wl.cgroup_path[0] != 0) {
-        cg_rc = minibox_cgroup_cleanup(wl.cgroup_path);
+        /* Strictly validate cgroup path before cleanup: must be inside /sys/fs/cgroup/ and contain 'minibox' */
+        if (strncmp(wl.cgroup_path, "/sys/fs/cgroup/", 15) == 0 &&
+            strstr(wl.cgroup_path, "minibox") != NULL &&
+            strstr(wl.cgroup_path, "..") == NULL) {
+            cg_rc = minibox_cgroup_cleanup(wl.cgroup_path);
+        } else {
+            errno = EINVAL;
+            return -1;
+        }
     }
 
     const char *base = minibox_get_state_dir();
     char dir[600];
     snprintf(dir, sizeof(dir), "%s/%s", base, id);
+
+    /* Verify that dir resolves within base */
+    char resolved_base[PATH_MAX] = {0};
+    char resolved_dir[PATH_MAX] = {0};
+    if (realpath(base, resolved_base) && realpath(dir, resolved_dir)) {
+        size_t base_len = strlen(resolved_base);
+        if (strncmp(resolved_dir, resolved_base, base_len) != 0 ||
+            resolved_dir[base_len] != '/') {
+            errno = EACCES;
+            return -1;
+        }
+    } else {
+        return -1;
+    }
+
     int dir_rc = remove_directory_recursive(dir);
 
     if (cg_rc != 0 && errno != ENOENT) {
