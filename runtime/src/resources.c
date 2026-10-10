@@ -15,6 +15,8 @@
 
 static char g_minibox_cgroup_base[600] = {0};
 
+static int read_file_string(const char *path, char *out, size_t max_len);
+
 int minibox_parse_memory_size(const char *str, uint64_t *out_bytes) {
     if (!str || !out_bytes) return -1;
 
@@ -183,8 +185,13 @@ int minibox_cgroup_find_root(char *out_path, size_t max_len) {
     /* Form base minibox root: <candidate>/minibox */
     char base_dir[600];
     snprintf(base_dir, sizeof(base_dir), "%s/minibox", candidate);
-    if (mkdir(base_dir, 0755) != 0 && errno != EEXIST) {
-        return -1;
+    bool newly_created = false;
+    if (mkdir(base_dir, 0755) != 0) {
+        if (errno != EEXIST) {
+            return -1;
+        }
+    } else {
+        newly_created = true;
     }
 
     /* Enable controllers in base_dir/cgroup.subtree_control */
@@ -192,12 +199,32 @@ int minibox_cgroup_find_root(char *out_path, size_t max_len) {
     snprintf(subtree_file, sizeof(subtree_file), "%s/cgroup.subtree_control", base_dir);
     int fd = open(subtree_file, O_WRONLY);
     if (fd < 0) {
+        int saved_err = errno;
+        if (newly_created) {
+            rmdir(base_dir);
+        }
+        errno = saved_err;
         return -1;
     }
 
     const char *ctrls = "+cpu +memory +pids";
-    (void)write(fd, ctrls, strlen(ctrls));
-    close(fd);
+    ssize_t wn = write(fd, ctrls, strlen(ctrls));
+    int write_err = (wn < 0) ? errno : 0;
+    int close_err = 0;
+    if (close(fd) != 0) {
+        close_err = errno;
+    }
+
+    /* Read back enabled controllers from subtree_control */
+    char readback[256] = {0};
+    if (read_file_string(subtree_file, readback, sizeof(readback)) != 0 || strlen(readback) == 0) {
+        int err = write_err ? write_err : (close_err ? close_err : EIO);
+        if (newly_created) {
+            rmdir(base_dir);
+        }
+        errno = err;
+        return -1;
+    }
 
     snprintf(g_minibox_cgroup_base, sizeof(g_minibox_cgroup_base), "%s", base_dir);
     snprintf(out_path, max_len, "%s", g_minibox_cgroup_base);
@@ -253,20 +280,27 @@ int minibox_cgroup_setup_workload(const char *workload_id,
         snprintf(path, sizeof(path), "%s/pids.max", wl_cg);
         FILE *f = fopen(path, "w");
         if (f) {
-            fprintf(f, "%d\n", limits->pids_max);
-            fclose(f);
-            if (read_file_string(path, status->pids_max_readback, sizeof(status->pids_max_readback)) == 0) {
-                char *end_p = NULL;
-                long read_pids = strtol(status->pids_max_readback, &end_p, 10);
-                if (read_pids == limits->pids_max) {
-                    status->pids_applied = true;
+            if (fprintf(f, "%d\n", limits->pids_max) >= 0 && fflush(f) == 0) {
+                if (fclose(f) == 0) {
+                    if (read_file_string(path, status->pids_max_readback, sizeof(status->pids_max_readback)) == 0) {
+                        char *end_p = NULL;
+                        long read_pids = strtol(status->pids_max_readback, &end_p, 10);
+                        if (read_pids == limits->pids_max) {
+                            status->pids_applied = true;
+                        }
+                    }
                 }
+            } else {
+                fclose(f);
             }
         }
         if (!status->pids_applied) {
+            int saved_err = errno ? errno : EIO;
             snprintf(status->error_msg, sizeof(status->error_msg),
                      "Failed to apply pids limit: readback ('%s') did not match requested %d",
-                     status->pids_max_readback[0] ? status->pids_max_readback : strerror(errno), limits->pids_max);
+                     status->pids_max_readback[0] ? status->pids_max_readback : strerror(saved_err), limits->pids_max);
+            minibox_cgroup_cleanup(wl_cg);
+            errno = saved_err;
             return -1;
         }
     }
@@ -277,20 +311,27 @@ int minibox_cgroup_setup_workload(const char *workload_id,
         snprintf(path, sizeof(path), "%s/memory.max", wl_cg);
         FILE *f = fopen(path, "w");
         if (f) {
-            fprintf(f, "%lu\n", (unsigned long)limits->memory_max_bytes);
-            fclose(f);
-            if (read_file_string(path, status->memory_max_readback, sizeof(status->memory_max_readback)) == 0) {
-                char *end_m = NULL;
-                unsigned long long read_mem = strtoull(status->memory_max_readback, &end_m, 10);
-                if (read_mem == limits->memory_max_bytes) {
-                    status->memory_applied = true;
+            if (fprintf(f, "%lu\n", (unsigned long)limits->memory_max_bytes) >= 0 && fflush(f) == 0) {
+                if (fclose(f) == 0) {
+                    if (read_file_string(path, status->memory_max_readback, sizeof(status->memory_max_readback)) == 0) {
+                        char *end_m = NULL;
+                        unsigned long long read_mem = strtoull(status->memory_max_readback, &end_m, 10);
+                        if (read_mem == limits->memory_max_bytes) {
+                            status->memory_applied = true;
+                        }
+                    }
                 }
+            } else {
+                fclose(f);
             }
         }
         if (!status->memory_applied) {
+            int saved_err = errno ? errno : EIO;
             snprintf(status->error_msg, sizeof(status->error_msg),
                      "Failed to apply memory limit: readback ('%s') did not match requested %lu bytes",
-                     status->memory_max_readback[0] ? status->memory_max_readback : strerror(errno), (unsigned long)limits->memory_max_bytes);
+                     status->memory_max_readback[0] ? status->memory_max_readback : strerror(saved_err), (unsigned long)limits->memory_max_bytes);
+            minibox_cgroup_cleanup(wl_cg);
+            errno = saved_err;
             return -1;
         }
 
@@ -299,7 +340,8 @@ int minibox_cgroup_setup_workload(const char *workload_id,
         snprintf(swap_path, sizeof(swap_path), "%s/memory.swap.max", wl_cg);
         FILE *f_swap = fopen(swap_path, "w");
         if (f_swap) {
-            fprintf(f_swap, "0\n");
+            (void)fprintf(f_swap, "0\n");
+            (void)fflush(f_swap);
             fclose(f_swap);
         }
     }
@@ -311,23 +353,30 @@ int minibox_cgroup_setup_workload(const char *workload_id,
         uint64_t quota_us = ((uint64_t)MINIBOX_DEFAULT_CPU_PERIOD_US * (uint64_t)limits->cpu_percent) / 100ULL;
         FILE *f = fopen(path, "w");
         if (f) {
-            fprintf(f, "%lu %d\n", (unsigned long)quota_us, MINIBOX_DEFAULT_CPU_PERIOD_US);
-            fclose(f);
-            if (read_file_string(path, status->cpu_max_readback, sizeof(status->cpu_max_readback)) == 0) {
-                unsigned long read_quota = 0;
-                unsigned long read_period = 0;
-                if (sscanf(status->cpu_max_readback, "%lu %lu", &read_quota, &read_period) == 2) {
-                    if (read_quota == quota_us && read_period == (unsigned long)MINIBOX_DEFAULT_CPU_PERIOD_US) {
-                        status->cpu_applied = true;
+            if (fprintf(f, "%lu %d\n", (unsigned long)quota_us, MINIBOX_DEFAULT_CPU_PERIOD_US) >= 0 && fflush(f) == 0) {
+                if (fclose(f) == 0) {
+                    if (read_file_string(path, status->cpu_max_readback, sizeof(status->cpu_max_readback)) == 0) {
+                        unsigned long read_quota = 0;
+                        unsigned long read_period = 0;
+                        if (sscanf(status->cpu_max_readback, "%lu %lu", &read_quota, &read_period) == 2) {
+                            if (read_quota == quota_us && read_period == (unsigned long)MINIBOX_DEFAULT_CPU_PERIOD_US) {
+                                status->cpu_applied = true;
+                            }
+                        }
                     }
                 }
+            } else {
+                fclose(f);
             }
         }
         if (!status->cpu_applied) {
+            int saved_err = errno ? errno : EIO;
             snprintf(status->error_msg, sizeof(status->error_msg),
                      "Failed to apply cpu limit: readback ('%s') did not match requested quota %lu/%d",
-                     status->cpu_max_readback[0] ? status->cpu_max_readback : strerror(errno),
+                     status->cpu_max_readback[0] ? status->cpu_max_readback : strerror(saved_err),
                      (unsigned long)quota_us, MINIBOX_DEFAULT_CPU_PERIOD_US);
+            minibox_cgroup_cleanup(wl_cg);
+            errno = saved_err;
             return -1;
         }
     }
@@ -336,15 +385,53 @@ int minibox_cgroup_setup_workload(const char *workload_id,
 }
 
 int minibox_cgroup_attach_pid(const char *cgroup_path, pid_t pid) {
-    if (!cgroup_path || pid <= 0) return -1;
+    if (!cgroup_path || pid <= 0) {
+        errno = EINVAL;
+        return -1;
+    }
 
-    char path[800];
+    char path[1100];
     snprintf(path, sizeof(path), "%s/cgroup.procs", cgroup_path);
     FILE *f = fopen(path, "w");
     if (!f) return -1;
 
-    fprintf(f, "%d\n", pid);
-    fclose(f);
+    if (fprintf(f, "%d\n", pid) < 0) {
+        int saved_err = errno ? errno : EIO;
+        fclose(f);
+        errno = saved_err;
+        return -1;
+    }
+
+    if (fflush(f) != 0) {
+        int saved_err = errno ? errno : EIO;
+        fclose(f);
+        errno = saved_err;
+        return -1;
+    }
+
+    if (fclose(f) != 0) {
+        return -1;
+    }
+
+    /* Verify PID is present in cgroup.procs readback */
+    FILE *rf = fopen(path, "r");
+    if (rf) {
+        char line[64];
+        bool found = false;
+        while (fgets(line, sizeof(line), rf)) {
+            pid_t p = 0;
+            if (sscanf(line, "%d", &p) == 1 && p == pid) {
+                found = true;
+                break;
+            }
+        }
+        fclose(rf);
+        if (!found) {
+            errno = ESRCH;
+            return -1;
+        }
+    }
+
     return 0;
 }
 

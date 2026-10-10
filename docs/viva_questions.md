@@ -69,4 +69,4 @@ $$\text{CPU \%} = \frac{(\Delta\text{utime} + \Delta\text{stime}) / \text{CLK\_T
 Where `CLK_TCK` is obtained via `sysconf(_SC_CLK_TCK)` (usually 100 on Linux).
 
 ### Q14: What is the cold-start penalty observed in container launch microbenchmarks?
-**Answer**: On the initial execution of a cgroup-isolated container, the kernel must allocate inode and directory structures in the cgroup v2 filesystem (`mkdir`), verify and enable subtree controllers (`+cpu +memory +pids`), and synchronize kernel accounting trees (~10–18 ms). On subsequent executions, memory structures and directory caches are warm, reducing steady-state overhead to under 2 ms.
+**Answer**: On the initial execution of a cgroup-isolated container, the kernel must allocate inode and directory structures in the cgroup v2 filesystem (`mkdir`), verify and enable subtree controllers (`+cpu +memory +pids`), and synchronize kernel accounting trees (~10–18 ms). On subsequent executions, memory structures and directory caches are warm, with warm executions completing in 3.34–6.26 ms (median 5.02 ms).

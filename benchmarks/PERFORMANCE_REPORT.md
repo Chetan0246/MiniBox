@@ -31,9 +31,9 @@ Microbenchmark measuring wall-clock execution latency for a minimal binary (`/us
 - **Namespace Isolation Cost:** Running `unshare(CLONE_NEWUSER | CLONE_NEWUTS | CLONE_NEWPID | CLONE_NEWNS)` and establishing user/group ID mappings adds approximately 0.5–1.0 ms of kernel setup overhead (median: 3.33 ms).
 - **cgroups v2 Cold vs Warm Variance:**
   - On the initial invocation (cold start), creating the cgroup directory under `/sys/fs/cgroup/user.slice/...`, writing controller configurations, and migrating the process into `cgroup.procs` takes ~10–18 ms (measured max: 14.68 ms) due to filesystem directory allocation and kernel cgroup tree synchronization.
-  - On subsequent warm executions, the operation executes in ~1.6–2.5 ms (measured min: 3.34 ms).
+  - On subsequent warm executions, the operation executes in 3.34–6.26 ms (measured min: 3.34 ms).
   - In small-trial runs ($N=2$), the cold-start outlier heavily skews the calculated median (e.g. [2.2 ms, 18.2 ms] yields a 10.22 ms median; [2.2 ms, 12.5 ms] yields 7.37 ms; [2.0 ms, 10.8 ms] yields 6.44 ms).
-  - Across 10 repetitions, the median steady-state latency stabilizes at 5.02 ms (+4.11 ms overhead vs direct), confirming that container startup overhead in steady state is under 2 ms.
+  - Across 10 repetitions, the median steady-state latency stabilizes at 5.02 ms (+4.11 ms overhead vs direct), with warm executions consistently completing in 3.34–6.26 ms.
 
 ---
 

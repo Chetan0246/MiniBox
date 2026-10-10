@@ -112,10 +112,8 @@ OOM_TERM_SIG=$(echo "$OOM_PARSED" | awk '{print $1}')
 OOM_KILLED=$(echo "$OOM_PARSED" | awk '{print $2}')
 if [ "$OOM_TERM_SIG" -eq 9 ] && [ "$OOM_KILLED" = "True" ]; then
     pass "Kernel cgroup OOM killer verified via memory.events (oom_killed=true, SIGKILL / signal 9)"
-elif [ "$OOM_TERM_SIG" -eq 9 ]; then
-    pass "Kernel OOM killer terminated process exceeding memory ceiling (SIGKILL / signal 9)"
 else
-    fail "Memory Ceiling" "Expected OOM termination, got: $OOM_RAW"
+    fail "Memory Ceiling" "Expected both SIGKILL (9) and oom_killed=true, got signal=$OOM_TERM_SIG, oom_killed=$OOM_KILLED. Output: $OOM_RAW"
 fi
 
 # Test 5: Kernel PID fork bomb defense

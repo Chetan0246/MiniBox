@@ -156,13 +156,13 @@ int minibox_detect_capabilities(minibox_capabilities_t *caps) {
 
     if (caps->user_ns_supported && caps->uts_ns_supported && caps->pid_ns_child_tested) {
         snprintf(caps->reason, sizeof(caps->reason),
-                 "Linux namespaces (User, UTS, PID, Mount) verified with PID 1; cgroups v2 delegated.");
+                 "Static capability probe: namespaces verified with PID 1; delegated cgroup candidate detected (dynamic enforcement verified at launch).");
     } else if (caps->user_ns_supported && caps->uts_ns_supported) {
         snprintf(caps->reason, sizeof(caps->reason),
-                 "Linux namespaces (User, UTS) supported; PID/Mount partially available.");
+                 "Static capability probe: namespaces (User, UTS) supported; PID/Mount partially available; delegated cgroup candidate detected.");
     } else {
         snprintf(caps->reason, sizeof(caps->reason),
-                 "Unprivileged user namespaces are restricted or unsupported on this kernel.");
+                 "Static capability probe: unprivileged user namespaces are restricted or unsupported on this kernel.");
     }
 
     return 0;

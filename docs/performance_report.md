@@ -35,7 +35,7 @@ Measure the wall-clock startup and execution latency of a minimal no-op binary (
 4. **Cold-Start vs. Steady-State cgroup Overhead**:
    - **Cold Start (Trial 1 = 14.68 ms)**: On the initial invocation, creating the cgroup directory under `/sys/fs/cgroup/user.slice/...`, writing controller strings (`+cpu +memory +pids`), and migrating the process into `cgroup.procs` takes ~14.7 ms due to filesystem directory allocation and kernel tree synchronization.
    - **Warm Cache (Trials 2–10 = 3.34–6.26 ms)**: Subsequent warm executions complete with a median of **5.02 ms**.
-   - **Conclusion**: MiniBox container initialization overhead in steady state is under 5 ms across full isolation and cgroups.
+   - **Conclusion**: MiniBox container initialization exhibits a 5.02 ms median latency under full isolation and cgroups (warm trial range: 3.34–6.26 ms; initial cold start: 14.68 ms).
 
 ---
 

@@ -99,21 +99,22 @@ static int cmd_capabilities(int argc, char *argv[]) {
                caps.pid_ns_supported ? "AVAILABLE" : "UNAVAILABLE",
                caps.pid_ns_child_tested ? "yes" : "no");
         printf("  Mount Namespace:           %s\n", caps.mount_ns_supported ? "AVAILABLE" : "UNAVAILABLE");
-        printf("  cgroups v2:                %s (kernel: %s, delegated: %s)\n",
+        printf("  cgroups v2:                %s (kernel: %s, delegated candidate: %s)\n",
                caps.cgroups_v2_supported ? "AVAILABLE" : "UNAVAILABLE",
                caps.cgroup_v2_kernel ? "yes" : "no",
                caps.cgroup_v2_delegated ? "yes" : "no");
-        printf("  cgroup Controllers:\n");
-        printf("    CPU:                     %s (writable: %s)\n",
+        printf("  cgroup Controllers (Candidate Delegation):\n");
+        printf("    CPU:                     %s (candidate writable: %s)\n",
                caps.cgroup_cpu_controller ? "AVAILABLE" : "UNAVAILABLE",
                caps.cgroup_cpu_writable ? "yes" : "no");
-        printf("    Memory:                  %s (writable: %s)\n",
+        printf("    Memory:                  %s (candidate writable: %s)\n",
                caps.cgroup_memory_controller ? "AVAILABLE" : "UNAVAILABLE",
                caps.cgroup_memory_writable ? "yes" : "no");
-        printf("    PIDs:                    %s (writable: %s)\n",
+        printf("    PIDs:                    %s (candidate writable: %s)\n",
                caps.cgroup_pids_controller ? "AVAILABLE" : "UNAVAILABLE",
                caps.cgroup_pids_writable ? "yes" : "no");
         printf("  Summary:                   %s\n", caps.reason);
+        printf("  Note: Static probe inspects candidate permissions; dynamic enforcement is verified at container launch.\n");
     }
     return 0;
 }
