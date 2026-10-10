@@ -274,17 +274,70 @@ static void parse_json_string(const char *json, const char *key, char *out, size
         if (*p == '\\' && *(p + 1)) {
             p++;
             switch (*p) {
-                case '\"': out[i++] = '\"'; break;
-                case '\\': out[i++] = '\\'; break;
-                case '/':  out[i++] = '/'; break;
-                case 'b':  out[i++] = '\b'; break;
-                case 'f':  out[i++] = '\f'; break;
-                case 'n':  out[i++] = '\n'; break;
-                case 'r':  out[i++] = '\r'; break;
-                case 't':  out[i++] = '\t'; break;
-                default:   out[i++] = *p; break;
+                case '\"': out[i++] = '\"'; p++; break;
+                case '\\': out[i++] = '\\'; p++; break;
+                case '/':  out[i++] = '/'; p++; break;
+                case 'b':  out[i++] = '\b'; p++; break;
+                case 'f':  out[i++] = '\f'; p++; break;
+                case 'n':  out[i++] = '\n'; p++; break;
+                case 'r':  out[i++] = '\r'; p++; break;
+                case 't':  out[i++] = '\t'; p++; break;
+                case 'u': {
+                    if (isxdigit((unsigned char)*(p + 1)) &&
+                        isxdigit((unsigned char)*(p + 2)) &&
+                        isxdigit((unsigned char)*(p + 3)) &&
+                        isxdigit((unsigned char)*(p + 4))) {
+                        char hex[5] = { *(p + 1), *(p + 2), *(p + 3), *(p + 4), 0 };
+                        unsigned int cp = (unsigned int)strtoul(hex, NULL, 16);
+                        p += 5;
+
+                        /* Check for UTF-16 surrogate pairs */
+                        if (cp >= 0xD800 && cp <= 0xDBFF && *p == '\\' && *(p + 1) == 'u') {
+                            if (isxdigit((unsigned char)*(p + 2)) &&
+                                isxdigit((unsigned char)*(p + 3)) &&
+                                isxdigit((unsigned char)*(p + 4)) &&
+                                isxdigit((unsigned char)*(p + 5))) {
+                                char hex2[5] = { *(p + 2), *(p + 3), *(p + 4), *(p + 5), 0 };
+                                unsigned int cp2 = (unsigned int)strtoul(hex2, NULL, 16);
+                                if (cp2 >= 0xDC00 && cp2 <= 0xDFFF) {
+                                    cp = 0x10000 + (((cp - 0xD800) << 10) | (cp2 - 0xDC00));
+                                    p += 6;
+                                }
+                            }
+                        }
+
+                        /* Encode into UTF-8 */
+                        if (cp <= 0x7F) {
+                            if (i + 1 < max_len) out[i++] = (char)cp;
+                        } else if (cp <= 0x7FF) {
+                            if (i + 2 < max_len) {
+                                out[i++] = (char)(0xC0 | (cp >> 6));
+                                out[i++] = (char)(0x80 | (cp & 0x3F));
+                            }
+                        } else if (cp <= 0xFFFF) {
+                            if (i + 3 < max_len) {
+                                out[i++] = (char)(0xE0 | (cp >> 12));
+                                out[i++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+                                out[i++] = (char)(0x80 | (cp & 0x3F));
+                            }
+                        } else if (cp <= 0x10FFFF) {
+                            if (i + 4 < max_len) {
+                                out[i++] = (char)(0xF0 | (cp >> 18));
+                                out[i++] = (char)(0x80 | ((cp >> 12) & 0x3F));
+                                out[i++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+                                out[i++] = (char)(0x80 | (cp & 0x3F));
+                            }
+                        }
+                    } else {
+                        out[i++] = 'u';
+                        p++;
+                    }
+                    break;
+                }
+                default:
+                    out[i++] = *p++;
+                    break;
             }
-            p++;
         } else {
             out[i++] = *p++;
         }
@@ -311,7 +364,15 @@ static uint64_t parse_json_uint64(const char *json, const char *key) {
 }
 
 int minibox_workload_load(const char *id, minibox_workload_t *wl) {
-    if (!id || !wl) return -1;
+    if (!id || id[0] == 0 || !wl) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (!is_safe_workload_id(id)) {
+        errno = EINVAL;
+        return -1;
+    }
 
     const char *base = minibox_get_state_dir();
     char filepath[MINIBOX_MAX_PATH_LEN];
@@ -325,8 +386,26 @@ int minibox_workload_load(const char *id, minibox_workload_t *wl) {
     fclose(f);
     buffer[n] = 0;
 
+    /* Validate basic JSON envelope */
+    const char *start = buffer;
+    while (*start && isspace((unsigned char)*start)) start++;
+    if (*start != '{') {
+        errno = EINVAL;
+        return -1;
+    }
+    const char *end = buffer + (n > 0 ? n - 1 : 0);
+    while (end > start && isspace((unsigned char)*end)) end--;
+    if (*end != '}') {
+        errno = EINVAL;
+        return -1;
+    }
+
     memset(wl, 0, sizeof(*wl));
     parse_json_string(buffer, "id", wl->id, sizeof(wl->id));
+    if (wl->id[0] == 0 || strcmp(wl->id, id) != 0) {
+        errno = EINVAL;
+        return -1;
+    }
     parse_json_string(buffer, "name", wl->name, sizeof(wl->name));
 
     char state_str[32] = {0};

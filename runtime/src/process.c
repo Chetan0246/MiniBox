@@ -175,6 +175,13 @@ int minibox_run_process(const minibox_process_config_t *config, minibox_process_
 }
 
 static volatile sig_atomic_t g_foreground_child_pid = 0;
+static volatile sig_atomic_t g_pid1_child = 0;
+
+static void forward_signal_to_pid1(int sig) {
+    if (g_pid1_child > 0) {
+        kill(g_pid1_child, sig);
+    }
+}
 
 static void sigint_handler(int sig) {
     (void)sig;
@@ -288,7 +295,7 @@ int minibox_run_workload_foreground(minibox_workload_t *wl,
             close(cg_sync_pipe[0]);
             cg_sync_pipe[0] = -1;
             if (sn != 1 || sync_byte != '1') {
-                int err = (sn < 0) ? errno : EACCES;
+                int err = (sn < 0) ? errno : ((sync_byte == '0') ? EACCES : EIO);
                 (void)write(pipefd[1], &err, sizeof(err));
                 close(pipefd[1]);
                 _exit(127);
@@ -304,19 +311,29 @@ int minibox_run_workload_foreground(minibox_workload_t *wl,
                 _exit(127);
             }
             if (pid1 > 0) {
+                g_pid1_child = pid1;
+                struct sigaction sa;
+                memset(&sa, 0, sizeof(sa));
+                sa.sa_handler = forward_signal_to_pid1;
+                sigaction(SIGTERM, &sa, NULL);
+                sigaction(SIGINT, &sa, NULL);
+                sigaction(SIGHUP, &sa, NULL);
+
                 int init_status = 0;
                 while (waitpid(pid1, &init_status, 0) < 0 && errno == EINTR);
+                g_pid1_child = 0;
                 if (WIFEXITED(init_status)) _exit(WEXITSTATUS(init_status));
                 if (WIFSIGNALED(init_status)) _exit(128 + WTERMSIG(init_status));
                 _exit(0);
             }
-            if (iso->enable_mount) {
-                if (mount("proc", "/proc", "proc", 0, NULL) != 0) {
-                    int err = errno;
-                    (void)write(pipefd[1], &err, sizeof(err));
-                    close(pipefd[1]);
-                    _exit(127);
-                }
+
+            /* In child: this process is PID 1 in the new PID namespace.
+             * Mount new /proc filesystem as a mandatory step for PID isolation. */
+            if (mount("proc", "/proc", "proc", 0, NULL) != 0) {
+                int err = errno;
+                (void)write(pipefd[1], &err, sizeof(err));
+                close(pipefd[1]);
+                _exit(127);
             }
         } else if (iso && iso->enable_mount) {
             if (mount("proc", "/proc", "proc", 0, NULL) != 0) {
@@ -363,13 +380,19 @@ int minibox_run_workload_foreground(minibox_workload_t *wl,
 
     if (wl->cgroup_active) {
         int attach_res = minibox_cgroup_attach_pid(wl->cgroup_path, pid);
-        if (attach_res != 0) {
-            int saved_err = (errno != 0) ? errno : EACCES;
-            if (cg_sync_pipe[1] >= 0) {
-                (void)write(cg_sync_pipe[1], "0", 1);
-                close(cg_sync_pipe[1]);
-                cg_sync_pipe[1] = -1;
+        char sync_cmd = (attach_res == 0) ? '1' : '0';
+        ssize_t wn = -1;
+        if (cg_sync_pipe[1] >= 0) {
+            wn = write(cg_sync_pipe[1], &sync_cmd, 1);
+            int close_err = close(cg_sync_pipe[1]);
+            cg_sync_pipe[1] = -1;
+            if (close_err != 0 && attach_res == 0) {
+                attach_res = -1;
             }
+        }
+
+        if (attach_res != 0 || wn != 1) {
+            int saved_err = (attach_res != 0) ? ((errno != 0) ? errno : EACCES) : EIO;
             if (cg_sync_pipe[0] >= 0) {
                 close(cg_sync_pipe[0]);
                 cg_sync_pipe[0] = -1;
@@ -386,12 +409,6 @@ int minibox_run_workload_foreground(minibox_workload_t *wl,
             minibox_workload_save(wl);
             g_foreground_child_pid = 0;
             return -1;
-        }
-
-        if (cg_sync_pipe[1] >= 0) {
-            (void)write(cg_sync_pipe[1], "1", 1);
-            close(cg_sync_pipe[1]);
-            cg_sync_pipe[1] = -1;
         }
     }
     if (cg_sync_pipe[0] >= 0) {
@@ -677,7 +694,7 @@ int minibox_start_workload_background(minibox_workload_t *wl,
             close(cg_sync_pipe[0]);
             cg_sync_pipe[0] = -1;
             if (sn != 1 || sync_byte != '1') {
-                int err = (sn < 0) ? errno : EACCES;
+                int err = (sn < 0) ? errno : ((sync_byte == '0') ? EACCES : EIO);
                 (void)write(err_pipe[1], &err, sizeof(err));
                 close(err_pipe[1]);
                 _exit(127);
@@ -693,19 +710,29 @@ int minibox_start_workload_background(minibox_workload_t *wl,
                 _exit(127);
             }
             if (pid1 > 0) {
+                g_pid1_child = pid1;
+                struct sigaction sa;
+                memset(&sa, 0, sizeof(sa));
+                sa.sa_handler = forward_signal_to_pid1;
+                sigaction(SIGTERM, &sa, NULL);
+                sigaction(SIGINT, &sa, NULL);
+                sigaction(SIGHUP, &sa, NULL);
+
                 int init_status = 0;
                 while (waitpid(pid1, &init_status, 0) < 0 && errno == EINTR);
+                g_pid1_child = 0;
                 if (WIFEXITED(init_status)) _exit(WEXITSTATUS(init_status));
                 if (WIFSIGNALED(init_status)) _exit(128 + WTERMSIG(init_status));
                 _exit(0);
             }
-            if (iso->enable_mount) {
-                if (mount("proc", "/proc", "proc", 0, NULL) != 0) {
-                    int err = errno;
-                    (void)write(err_pipe[1], &err, sizeof(err));
-                    close(err_pipe[1]);
-                    _exit(127);
-                }
+
+            /* In child: this process is PID 1 in the new PID namespace.
+             * Mount new /proc filesystem as a mandatory step for PID isolation. */
+            if (mount("proc", "/proc", "proc", 0, NULL) != 0) {
+                int err = errno;
+                (void)write(err_pipe[1], &err, sizeof(err));
+                close(err_pipe[1]);
+                _exit(127);
             }
         } else if (iso && iso->enable_mount) {
             if (mount("proc", "/proc", "proc", 0, NULL) != 0) {
@@ -746,13 +773,19 @@ int minibox_start_workload_background(minibox_workload_t *wl,
 
     if (wl->cgroup_active) {
         int attach_res = minibox_cgroup_attach_pid(wl->cgroup_path, child_pid);
-        if (attach_res != 0) {
-            int saved_err = (errno != 0) ? errno : EACCES;
-            if (cg_sync_pipe[1] >= 0) {
-                (void)write(cg_sync_pipe[1], "0", 1);
-                close(cg_sync_pipe[1]);
-                cg_sync_pipe[1] = -1;
+        char sync_cmd = (attach_res == 0) ? '1' : '0';
+        ssize_t wn = -1;
+        if (cg_sync_pipe[1] >= 0) {
+            wn = write(cg_sync_pipe[1], &sync_cmd, 1);
+            int close_err = close(cg_sync_pipe[1]);
+            cg_sync_pipe[1] = -1;
+            if (close_err != 0 && attach_res == 0) {
+                attach_res = -1;
             }
+        }
+
+        if (attach_res != 0 || wn != 1) {
+            int saved_err = (attach_res != 0) ? ((errno != 0) ? errno : EACCES) : EIO;
             if (cg_sync_pipe[0] >= 0) {
                 close(cg_sync_pipe[0]);
                 cg_sync_pipe[0] = -1;
@@ -772,12 +805,6 @@ int minibox_start_workload_background(minibox_workload_t *wl,
             (void)write(sync_pipe[1], &code, sizeof(code));
             close(sync_pipe[1]);
             _exit(1);
-        }
-
-        if (cg_sync_pipe[1] >= 0) {
-            (void)write(cg_sync_pipe[1], "1", 1);
-            close(cg_sync_pipe[1]);
-            cg_sync_pipe[1] = -1;
         }
     }
     if (cg_sync_pipe[0] >= 0) {

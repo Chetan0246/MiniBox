@@ -11,10 +11,12 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET="$REPO_ROOT/bin/minibox"
 FAILED=0
 PASSED=0
+SKIPPED=0
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
+YELLOW='\033[0;33m'
 NC='\033[0m'
 
 pass() {
@@ -25,6 +27,11 @@ pass() {
 fail() {
     echo -e "${RED}[FAIL]${NC} $1: $2"
     FAILED=$((FAILED + 1))
+}
+
+skip() {
+    echo -e "${YELLOW}[SKIP]${NC} $1: $2"
+    SKIPPED=$((SKIPPED + 1))
 }
 
 info() {
@@ -41,23 +48,40 @@ echo "Running MiniBox Behavioral Verification Suite"
 echo " (Kernel Isolation, Limits, Validation & Hardening)"
 echo "=================================================="
 
+# Probe capabilities upfront for portability across environments
+CAPS_PROBE=$("$TARGET" capabilities --json 2>&1 || echo "{}")
+CAN_UNPRIV_USER=$(echo "$CAPS_PROBE" | python3 -c "import sys, json; print(json.load(sys.stdin).get('user_namespaces', False))" 2>/dev/null || echo "False")
+CAN_PID_NS=$(echo "$CAPS_PROBE" | python3 -c "import sys, json; print(json.load(sys.stdin).get('pid_namespace', False))" 2>/dev/null || echo "False")
+CAN_CGROUPS=$(echo "$CAPS_PROBE" | python3 -c "import sys, json; print(json.load(sys.stdin).get('cgroups_v2', False))" 2>/dev/null || echo "False")
+CAN_CPU=$(echo "$CAPS_PROBE" | python3 -c "import sys, json; print(json.load(sys.stdin).get('granular', {}).get('cgroup_cpu_writable', False))" 2>/dev/null || echo "False")
+CAN_MEM=$(echo "$CAPS_PROBE" | python3 -c "import sys, json; print(json.load(sys.stdin).get('granular', {}).get('cgroup_memory_writable', False))" 2>/dev/null || echo "False")
+CAN_PIDS=$(echo "$CAPS_PROBE" | python3 -c "import sys, json; print(json.load(sys.stdin).get('granular', {}).get('cgroup_pids_writable', False))" 2>/dev/null || echo "False")
+
 # Test 1: PID Namespace PID 1 execution
 info "Test 1: PID namespace verification (process sees PID 1)"
-ISO_OUT=$("$TARGET" run --isolate "$REPO_ROOT/bin/examples/check_isolation" 2>&1)
-if echo "$ISO_OUT" | grep -q "PID:[[:space:]]*1"; then
-    pass "Isolated workload confirmed PID 1 execution inside PID namespace"
+if [ "$CAN_PID_NS" = "True" ]; then
+    ISO_OUT=$("$TARGET" run --isolate "$REPO_ROOT/bin/examples/check_isolation" 2>&1)
+    if echo "$ISO_OUT" | grep -q "PID:[[:space:]]*1"; then
+        pass "Isolated workload confirmed PID 1 execution inside PID namespace"
+    else
+        fail "PID 1 Verification" "Workload did not report PID 1: $ISO_OUT"
+    fi
 else
-    fail "PID 1 Verification" "Workload did not report PID 1: $ISO_OUT"
+    skip "PID 1 Verification" "Host kernel does not permit unprivileged PID namespaces"
 fi
 
 # Test 2: Synchronized cgroup attachment with PID namespace (--isolate --cpu 50)
 info "Test 2: Isolated CFS CPU quota enforcement (--isolate --cpu 50)"
-CPU_THROTTLE_OUT=$("$TARGET" run --isolate --cpu 50 "$REPO_ROOT/bin/examples/cpu_hog" 1 2>&1)
-USAGE_PCT=$(echo "$CPU_THROTTLE_OUT" | grep -o -E "usage=[0-9]+\.[0-9]+" | cut -d= -f2 || echo "0")
-if python3 -c "import sys; u = float('$USAGE_PCT'); sys.exit(0 if 35.0 <= u <= 65.0 else 1)"; then
-    pass "CPU hog throttled under isolated cgroup: ${USAGE_PCT}% (target: 50%)"
+if [ "$CAN_PID_NS" = "True" ] && [ "$CAN_CGROUPS" = "True" ] && [ "$CAN_CPU" = "True" ]; then
+    CPU_THROTTLE_OUT=$("$TARGET" run --isolate --cpu 50 "$REPO_ROOT/bin/examples/cpu_hog" 1 2>&1)
+    USAGE_PCT=$(echo "$CPU_THROTTLE_OUT" | grep -o -E "usage=[0-9]+\.[0-9]+" | cut -d= -f2 || echo "0")
+    if python3 -c "import sys; u = float('$USAGE_PCT'); sys.exit(0 if 35.0 <= u <= 65.0 else 1)"; then
+        pass "CPU hog throttled under isolated cgroup: ${USAGE_PCT}% (target: 50%)"
+    else
+        fail "CPU Quota Under Isolation" "Expected ~50% quota, got: '$CPU_THROTTLE_OUT'"
+    fi
 else
-    fail "CPU Quota Under Isolation" "Expected ~50% quota, got: '$CPU_THROTTLE_OUT'"
+    skip "CPU Quota Under Isolation" "Host environment does not support delegated cgroups v2 CPU controller"
 fi
 
 # Test 3: Strict input validation on resource limits
@@ -94,8 +118,9 @@ fi
 
 # Test 4: Kernel OOM-killer memory enforcement via memory.events
 info "Test 4: Kernel Out-Of-Memory enforcement (64M alloc under 16M limit)"
-OOM_RAW=$("$TARGET" run --json --memory 16M "$REPO_ROOT/bin/examples/memory_hog" 64 2>&1 || true)
-OOM_PARSED=$(echo "$OOM_RAW" | python3 -c "
+if [ "$CAN_CGROUPS" = "True" ] && [ "$CAN_MEM" = "True" ]; then
+    OOM_RAW=$("$TARGET" run --json --memory 16M "$REPO_ROOT/bin/examples/memory_hog" 64 2>&1 || true)
+    OOM_PARSED=$(echo "$OOM_RAW" | python3 -c "
 import sys, json
 raw = sys.stdin.read()
 idx = raw.find('{')
@@ -108,21 +133,28 @@ if idx >= 0:
         pass
 print('0 False')
 ")
-OOM_TERM_SIG=$(echo "$OOM_PARSED" | awk '{print $1}')
-OOM_KILLED=$(echo "$OOM_PARSED" | awk '{print $2}')
-if [ "$OOM_TERM_SIG" -eq 9 ] && [ "$OOM_KILLED" = "True" ]; then
-    pass "Kernel cgroup OOM killer verified via memory.events (oom_killed=true, SIGKILL / signal 9)"
+    OOM_TERM_SIG=$(echo "$OOM_PARSED" | awk '{print $1}')
+    OOM_KILLED=$(echo "$OOM_PARSED" | awk '{print $2}')
+    if [ "$OOM_TERM_SIG" -eq 9 ] && [ "$OOM_KILLED" = "True" ]; then
+        pass "Kernel cgroup OOM killer verified via memory.events (oom_killed=true, SIGKILL / signal 9)"
+    else
+        fail "Memory Ceiling" "Expected both SIGKILL (9) and oom_killed=true, got signal=$OOM_TERM_SIG, oom_killed=$OOM_KILLED. Output: $OOM_RAW"
+    fi
 else
-    fail "Memory Ceiling" "Expected both SIGKILL (9) and oom_killed=true, got signal=$OOM_TERM_SIG, oom_killed=$OOM_KILLED. Output: $OOM_RAW"
+    skip "Memory Ceiling" "Host environment does not support delegated cgroups v2 memory controller"
 fi
 
 # Test 5: Kernel PID fork bomb defense
 info "Test 5: Kernel PID ceiling enforcement (10 forks under pids.max=5)"
-FORK_OUT=$("$TARGET" run --pids 5 "$REPO_ROOT/bin/examples/fork_test" 10 2>&1)
-if echo "$FORK_OUT" | grep -q "fork rejected" || echo "$FORK_OUT" | grep -qi "Resource temporarily unavailable"; then
-    pass "Excess process forks rejected by kernel with errno == EAGAIN"
+if [ "$CAN_CGROUPS" = "True" ] && [ "$CAN_PIDS" = "True" ]; then
+    FORK_OUT=$("$TARGET" run --pids 5 "$REPO_ROOT/bin/examples/fork_test" 10 2>&1)
+    if echo "$FORK_OUT" | grep -q "fork rejected" || echo "$FORK_OUT" | grep -qi "Resource temporarily unavailable"; then
+        pass "Excess process forks rejected by kernel with errno == EAGAIN"
+    else
+        fail "PID Ceiling" "Fork bomb was not restricted: $FORK_OUT"
+    fi
 else
-    fail "PID Ceiling" "Fork bomb was not restricted: $FORK_OUT"
+    skip "PID Ceiling" "Host environment does not support delegated cgroups v2 pids controller"
 fi
 
 # Test 6: JSON serialization resilience with special characters
@@ -256,8 +288,66 @@ else
     fail "TUI Client Arguments" "Failed end-to-end client verification: $CLIENT_OK"
 fi
 
+# Test 11: JSON Unicode escape decoding (\uXXXX) and malformed state resilience
+info "Test 11: JSON Unicode decoding (\\uXXXX) and malformed state rejection"
+STATE_DIR="/tmp/minibox-$(id -u)/workloads/test-unicode-wl"
+mkdir -p "$STATE_DIR"
+cat <<'EOF' > "$STATE_DIR/state.json"
+{
+  "id": "test-unicode-wl",
+  "name": "\u0048\u0065\u006c\u006c\u006f-\u03b1\u03b2\u03b3",
+  "state": "COMPLETED",
+  "pid": 0,
+  "supervisor_pid": 0,
+  "executable": "/bin/true",
+  "args": "",
+  "work_dir": ".",
+  "created_at_ms": 1000,
+  "started_at_ms": 1000,
+  "finished_at_ms": 2000,
+  "exit_code": 0,
+  "term_signal": 0,
+  "exec_errno": 0,
+  "error_msg": "",
+  "log_file": "/tmp/test.log",
+  "iso_uts": false,
+  "iso_hostname": "",
+  "iso_pid": false,
+  "iso_mount": false,
+  "cpu_percent": 0,
+  "memory_max_bytes": 0,
+  "pids_max": 0,
+  "cgroup_path": "",
+  "cgroup_active": false,
+  "oom_killed": false
+}
+EOF
+
+UNICODE_INSPECT=$("$TARGET" inspect "test-unicode-wl" --json 2>&1 || true)
+UNICODE_NAME=$(echo "$UNICODE_INSPECT" | python3 -c "import sys, json; print(json.load(sys.stdin).get('name', ''))" 2>/dev/null || echo "")
+
+# Test malformed JSON state file
+MAL_DIR="/tmp/minibox-$(id -u)/workloads/test-malformed-wl"
+mkdir -p "$MAL_DIR"
+cat <<'EOF' > "$MAL_DIR/state.json"
+{
+  "id": "test-malformed-wl",
+  "name": "incomplete-json-state"
+EOF
+
+MAL_INSPECT_JSON=$("$TARGET" inspect "test-malformed-wl" --json 2>&1 || true)
+
+"$TARGET" delete "test-unicode-wl" >/dev/null 2>&1 || true
+rm -rf "$STATE_DIR" "$MAL_DIR" 2>/dev/null || true
+
+if [ "$UNICODE_NAME" = "Hello-αβγ" ] && echo "$MAL_INSPECT_JSON" | grep -q '"ok": false'; then
+    pass "JSON Unicode escapes decoded to UTF-8 and malformed JSON safely rejected"
+else
+    fail "JSON Parser" "Unicode name got '$UNICODE_NAME' (expected 'Hello-αβγ'), Malformed inspect: $MAL_INSPECT_JSON"
+fi
+
 echo "=================================================="
-echo "Behavioral Test Results: $PASSED passed, $FAILED failed"
+echo "Behavioral Test Results: $PASSED passed, $SKIPPED skipped, $FAILED failed"
 echo "=================================================="
 
 if [ "$FAILED" -gt 0 ]; then
