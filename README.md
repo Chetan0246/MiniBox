@@ -106,7 +106,7 @@ Keys: [N] New  [S] Stop  [I] Inspect  [L] Logs  [C] Cleanup  [B] Benchmark  [H] 
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/example/MiniBox.git
+git clone https://github.com/Chetan0246/MiniBox.git
 cd MiniBox
 
 # 2. Compile the C runtime and test workload binaries
@@ -177,11 +177,11 @@ Measurements recorded across 10 empirical trials on native hardware (AMD Ryzen 7
 
 | Experiment | Metric | Direct Host | MiniBox Container | Measured Overhead |
 |---|---|---|---|---|
-| **Startup Overhead** | Minimal binary latency | 0.65 ms (median) / 0.81 ms (mean) | 1.97 ms (median) / 3.76 ms (mean) | **+1.32 ms** (steady-state median; cold start: 18.7 ms) |
-| **CFS CPU Quota** | 50% target over 2.0s | 99.6% (median) | 50.55% (median) / 50.58% (mean) | $\pm 0.8\%$ quantization jitter |
-| **Memory Ceiling** | 64 MiB dirty under 16 MiB | N/A | SIGKILL (137) | **100% OOM Killed** |
+| **Startup Overhead** | Minimal binary latency | 0.91 ms (median) / 1.04 ms (mean) | 5.02 ms (median) / 5.86 ms (mean) | **+4.11 ms** (cold start: 14.68 ms, warm range: 3.34–6.26 ms) |
+| **CFS CPU Quota** | 50% target over 2.0s | 99.1% (median) | 50.55% (median) / 50.78% (mean) | $\pm 0.8\%$ quantization jitter (49.8%–51.9%) |
+| **Memory Ceiling** | 64 MiB dirty under 16 MiB | N/A | SIGKILL (137) | **100% OOM Killed** (`memory.events`) |
 | **PID Fork Bomb** | 10 forks under `pids.max=5` | 10 forks (2) | 5th fork rejected (0) | **`errno == EAGAIN`** |
-| **Supervisor Start** | Background launch latency | N/A | 1.44 ms | Sub-2 ms daemonization |
+| **Supervisor Start** | Background launch latency | N/A | 3.73 ms | Sub-4 ms daemonization |
 
 *See [`docs/performance_report.md`](docs/performance_report.md) for full statistical breakdown.*
 
@@ -226,7 +226,7 @@ make demo
 
 ## Limitations
 
-1. **Unprivileged Rootless Mounts**: Private `/proc` isolation requires `CLONE_NEWNS` + `CLONE_NEWUSER` + `CLONE_NEWPID`; root filesystem mutation is intentionally restricted without host `root` privileges.
+1. **Filesystem Isolation Scope**: MiniBox provides process tree, hostname, and private `/proc` mount isolation (`CLONE_NEWNS` + `CLONE_NEWUSER` + `CLONE_NEWPID`), but shares the host filesystem without rootfs sandboxing (no `chroot` or `pivot_root`). MiniBox is designed as an educational tool demonstrating kernel mechanisms, not a secure jail for untrusted workloads.
 2. **Cold-Start Latency**: The very first container invocation incurs an initial ~10–18 ms operating system penalty for cgroup tree synchronization; subsequent warm executions complete in ~1.97 ms.
 3. **CFS Granularity**: CFS throttles over 100 ms periods; burst compute workloads executing in under 100 ms cannot be throttled.
 

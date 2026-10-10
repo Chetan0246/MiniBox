@@ -245,7 +245,8 @@ int minibox_workload_save(const minibox_workload_t *wl) {
     fprintf(f, "  \"memory_max_bytes\": %lu,\n", (unsigned long)wl->limits.memory_max_bytes);
     fprintf(f, "  \"pids_max\": %d,\n", wl->limits.pids_max);
     write_json_escaped_string(f, "cgroup_path", wl->cgroup_path, true);
-    fprintf(f, "  \"cgroup_active\": %s\n", wl->cgroup_active ? "true" : "false");
+    fprintf(f, "  \"cgroup_active\": %s,\n", wl->cgroup_active ? "true" : "false");
+    fprintf(f, "  \"oom_killed\": %s\n", wl->oom_killed ? "true" : "false");
     fprintf(f, "}\n");
 
     fflush(f);
@@ -356,6 +357,7 @@ int minibox_workload_load(const char *id, minibox_workload_t *wl) {
     wl->limits.pids_max = (int)parse_json_int(buffer, "pids_max");
     parse_json_string(buffer, "cgroup_path", wl->cgroup_path, sizeof(wl->cgroup_path));
     wl->cgroup_active = (strstr(buffer, "\"cgroup_active\": true") != NULL);
+    wl->oom_killed = (strstr(buffer, "\"oom_killed\": true") != NULL);
 
     return 0;
 }

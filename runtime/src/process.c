@@ -284,9 +284,15 @@ int minibox_run_workload_foreground(minibox_workload_t *wl,
          */
         if (cg_sync_pipe[0] >= 0) {
             char sync_byte = 0;
-            (void)read(cg_sync_pipe[0], &sync_byte, 1);
+            ssize_t sn = read(cg_sync_pipe[0], &sync_byte, 1);
             close(cg_sync_pipe[0]);
             cg_sync_pipe[0] = -1;
+            if (sn != 1 || sync_byte != '1') {
+                int err = (sn < 0) ? errno : EACCES;
+                (void)write(pipefd[1], &err, sizeof(err));
+                close(pipefd[1]);
+                _exit(127);
+            }
         }
 
         if (iso && iso->enable_pid) {
@@ -305,7 +311,19 @@ int minibox_run_workload_foreground(minibox_workload_t *wl,
                 _exit(0);
             }
             if (iso->enable_mount) {
-                (void)mount("proc", "/proc", "proc", 0, NULL);
+                if (mount("proc", "/proc", "proc", 0, NULL) != 0) {
+                    int err = errno;
+                    (void)write(pipefd[1], &err, sizeof(err));
+                    close(pipefd[1]);
+                    _exit(127);
+                }
+            }
+        } else if (iso && iso->enable_mount) {
+            if (mount("proc", "/proc", "proc", 0, NULL) != 0) {
+                int err = errno;
+                (void)write(pipefd[1], &err, sizeof(err));
+                close(pipefd[1]);
+                _exit(127);
             }
         }
 
@@ -344,13 +362,42 @@ int minibox_run_workload_foreground(minibox_workload_t *wl,
     close(pipefd[1]);
 
     if (wl->cgroup_active) {
-        minibox_cgroup_attach_pid(wl->cgroup_path, pid);
+        int attach_res = minibox_cgroup_attach_pid(wl->cgroup_path, pid);
+        if (attach_res != 0) {
+            int saved_err = (errno != 0) ? errno : EACCES;
+            if (cg_sync_pipe[1] >= 0) {
+                (void)write(cg_sync_pipe[1], "0", 1);
+                close(cg_sync_pipe[1]);
+                cg_sync_pipe[1] = -1;
+            }
+            if (cg_sync_pipe[0] >= 0) {
+                close(cg_sync_pipe[0]);
+                cg_sync_pipe[0] = -1;
+            }
+            close(pipefd[0]);
+            kill(pid, SIGKILL);
+            int wait_status = 0;
+            while (waitpid(pid, &wait_status, 0) < 0 && errno == EINTR);
+            minibox_cgroup_cleanup(wl->cgroup_path);
+            wl->state = MINIBOX_STATE_FAILED;
+            wl->exec_errno = saved_err;
+            snprintf(wl->error_msg, sizeof(wl->error_msg), "cgroup attach failed: %s", strerror(saved_err));
+            wl->finished_at_ms = minibox_current_time_ms();
+            minibox_workload_save(wl);
+            g_foreground_child_pid = 0;
+            return -1;
+        }
+
         if (cg_sync_pipe[1] >= 0) {
             (void)write(cg_sync_pipe[1], "1", 1);
             close(cg_sync_pipe[1]);
+            cg_sync_pipe[1] = -1;
         }
     }
-    if (cg_sync_pipe[0] >= 0) close(cg_sync_pipe[0]);
+    if (cg_sync_pipe[0] >= 0) {
+        close(cg_sync_pipe[0]);
+        cg_sync_pipe[0] = -1;
+    }
 
     struct sigaction sa_new, sa_old_int, sa_old_term;
     memset(&sa_new, 0, sizeof(sa_new));
@@ -410,6 +457,20 @@ int minibox_run_workload_foreground(minibox_workload_t *wl,
     g_foreground_child_pid = 0;
 
     if (wl->cgroup_active) {
+        char events_path[1100];
+        snprintf(events_path, sizeof(events_path), "%s/memory.events", wl->cgroup_path);
+        FILE *f_ev = fopen(events_path, "r");
+        if (f_ev) {
+            char eline[128];
+            while (fgets(eline, sizeof(eline), f_ev)) {
+                int count = 0;
+                if (sscanf(eline, "oom_kill %d", &count) == 1 && count > 0) {
+                    wl->oom_killed = true;
+                    break;
+                }
+            }
+            fclose(f_ev);
+        }
         minibox_cgroup_cleanup(wl->cgroup_path);
     }
 
@@ -612,9 +673,15 @@ int minibox_start_workload_background(minibox_workload_t *wl,
          */
         if (cg_sync_pipe[0] >= 0) {
             char sync_byte = 0;
-            (void)read(cg_sync_pipe[0], &sync_byte, 1);
+            ssize_t sn = read(cg_sync_pipe[0], &sync_byte, 1);
             close(cg_sync_pipe[0]);
             cg_sync_pipe[0] = -1;
+            if (sn != 1 || sync_byte != '1') {
+                int err = (sn < 0) ? errno : EACCES;
+                (void)write(err_pipe[1], &err, sizeof(err));
+                close(err_pipe[1]);
+                _exit(127);
+            }
         }
 
         if (iso && iso->enable_pid) {
@@ -633,7 +700,19 @@ int minibox_start_workload_background(minibox_workload_t *wl,
                 _exit(0);
             }
             if (iso->enable_mount) {
-                (void)mount("proc", "/proc", "proc", 0, NULL);
+                if (mount("proc", "/proc", "proc", 0, NULL) != 0) {
+                    int err = errno;
+                    (void)write(err_pipe[1], &err, sizeof(err));
+                    close(err_pipe[1]);
+                    _exit(127);
+                }
+            }
+        } else if (iso && iso->enable_mount) {
+            if (mount("proc", "/proc", "proc", 0, NULL) != 0) {
+                int err = errno;
+                (void)write(err_pipe[1], &err, sizeof(err));
+                close(err_pipe[1]);
+                _exit(127);
             }
         }
 
@@ -666,13 +745,45 @@ int minibox_start_workload_background(minibox_workload_t *wl,
     close(err_pipe[1]);
 
     if (wl->cgroup_active) {
-        minibox_cgroup_attach_pid(wl->cgroup_path, child_pid);
+        int attach_res = minibox_cgroup_attach_pid(wl->cgroup_path, child_pid);
+        if (attach_res != 0) {
+            int saved_err = (errno != 0) ? errno : EACCES;
+            if (cg_sync_pipe[1] >= 0) {
+                (void)write(cg_sync_pipe[1], "0", 1);
+                close(cg_sync_pipe[1]);
+                cg_sync_pipe[1] = -1;
+            }
+            if (cg_sync_pipe[0] >= 0) {
+                close(cg_sync_pipe[0]);
+                cg_sync_pipe[0] = -1;
+            }
+            close(err_pipe[0]);
+            kill(child_pid, SIGKILL);
+            int wait_status = 0;
+            while (waitpid(child_pid, &wait_status, 0) < 0 && errno == EINTR);
+            minibox_cgroup_cleanup(wl->cgroup_path);
+            wl->state = MINIBOX_STATE_FAILED;
+            wl->exec_errno = saved_err;
+            snprintf(wl->error_msg, sizeof(wl->error_msg), "cgroup attach failed: %s", strerror(saved_err));
+            wl->finished_at_ms = minibox_current_time_ms();
+            minibox_workload_save(wl);
+
+            int code = -1;
+            (void)write(sync_pipe[1], &code, sizeof(code));
+            close(sync_pipe[1]);
+            _exit(1);
+        }
+
         if (cg_sync_pipe[1] >= 0) {
             (void)write(cg_sync_pipe[1], "1", 1);
             close(cg_sync_pipe[1]);
+            cg_sync_pipe[1] = -1;
         }
     }
-    if (cg_sync_pipe[0] >= 0) close(cg_sync_pipe[0]);
+    if (cg_sync_pipe[0] >= 0) {
+        close(cg_sync_pipe[0]);
+        cg_sync_pipe[0] = -1;
+    }
 
     int child_errno = 0;
     size_t bytes_read = 0;
@@ -725,6 +836,20 @@ int minibox_start_workload_background(minibox_workload_t *wl,
     }
 
     if (wl->cgroup_active) {
+        char events_path[1100];
+        snprintf(events_path, sizeof(events_path), "%s/memory.events", wl->cgroup_path);
+        FILE *f_ev = fopen(events_path, "r");
+        if (f_ev) {
+            char eline[128];
+            while (fgets(eline, sizeof(eline), f_ev)) {
+                int count = 0;
+                if (sscanf(eline, "oom_kill %d", &count) == 1 && count > 0) {
+                    wl->oom_killed = true;
+                    break;
+                }
+            }
+            fclose(f_ev);
+        }
         minibox_cgroup_cleanup(wl->cgroup_path);
     }
 

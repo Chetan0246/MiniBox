@@ -55,7 +55,7 @@ fi
 # Test 2: Unisolated baseline run (default path untouched)
 run_test "Unisolated execution retains host configuration"
 BASELINE_OUT=$("$MINIBOX" run bin/examples/check_isolation)
-if [[ "$BASELINE_OUT" == *"Hostname: $HOST_HOSTNAME"* && "$BASELINE_OUT" != *"PID:      1"* ]]; then
+if [[ "$BASELINE_OUT" == *"Hostname: $HOST_HOSTNAME"* ]] && ! echo "$BASELINE_OUT" | grep -q -E "PID:[[:space:]]+1$"; then
     pass "Baseline workload saw host hostname ($HOST_HOSTNAME) and non-PID-1 host PID"
 else
     fail "Baseline execution" "Output: $BASELINE_OUT"

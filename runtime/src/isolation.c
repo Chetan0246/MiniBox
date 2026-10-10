@@ -124,14 +124,14 @@ int minibox_detect_capabilities(minibox_capabilities_t *caps) {
         caps->cgroup_v2_kernel = true;
     }
 
-    /* 4. Probe cgroup v2 delegated subtree and controller availability/writability */
-    char cg_root[600] = {0};
-    if (minibox_cgroup_find_root(cg_root, sizeof(cg_root)) == 0) {
+    /* 4. Probe cgroup v2 delegated subtree and controller availability/writability (read-only) */
+    char cg_cand[600] = {0};
+    if (minibox_cgroup_find_candidate(cg_cand, sizeof(cg_cand)) == 0) {
         caps->cgroup_v2_delegated = true;
 
-        /* Check controllers available in delegated base */
+        /* Inspect controllers listed in delegated candidate base */
         char ctrl_path[700];
-        snprintf(ctrl_path, sizeof(ctrl_path), "%s/cgroup.controllers", cg_root);
+        snprintf(ctrl_path, sizeof(ctrl_path), "%s/cgroup.controllers", cg_cand);
         FILE *fc = fopen(ctrl_path, "r");
         if (fc) {
             char buf[256] = {0};
@@ -143,34 +143,13 @@ int minibox_detect_capabilities(minibox_capabilities_t *caps) {
             fclose(fc);
         }
 
-        /* Check controller writability via probe sub-cgroup */
-        char probe_cg[750];
-        snprintf(probe_cg, sizeof(probe_cg), "%s/probe_%u", cg_root, (unsigned int)getpid());
-        if (mkdir(probe_cg, 0755) == 0) {
-            char p[800];
-            snprintf(p, sizeof(p), "%s/pids.max", probe_cg);
-            FILE *f_test = fopen(p, "w");
-            if (f_test) {
-                if (fprintf(f_test, "max\n") > 0) caps->cgroup_pids_writable = true;
-                fclose(f_test);
-            }
-
-            snprintf(p, sizeof(p), "%s/memory.max", probe_cg);
-            f_test = fopen(p, "w");
-            if (f_test) {
-                if (fprintf(f_test, "max\n") > 0) caps->cgroup_memory_writable = true;
-                fclose(f_test);
-            }
-
-            snprintf(p, sizeof(p), "%s/cpu.max", probe_cg);
-            f_test = fopen(p, "w");
-            if (f_test) {
-                if (fprintf(f_test, "max 100000\n") > 0) caps->cgroup_cpu_writable = true;
-                fclose(f_test);
-            }
-
-            rmdir(probe_cg);
-        }
+        /*
+         * Since find_candidate verified that cg_cand/cgroup.subtree_control is writable,
+         * all controllers available in cgroup.controllers are writable by the unprivileged user.
+         */
+        caps->cgroup_cpu_writable = caps->cgroup_cpu_controller;
+        caps->cgroup_memory_writable = caps->cgroup_memory_controller;
+        caps->cgroup_pids_writable = caps->cgroup_pids_controller;
     }
 
     caps->cgroups_v2_supported = caps->cgroup_v2_kernel && caps->cgroup_v2_delegated;

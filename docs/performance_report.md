@@ -14,7 +14,7 @@ All performance evaluations were conducted on real physical hardware running nat
 
 ---
 
-## 2. Experiment 1: Container Launch Overhead
+### 2. Experiment 1: Container Launch Overhead
 
 ### 2.1 Objective
 Measure the wall-clock startup and execution latency of a minimal no-op binary (`/usr/bin/true`) comparing direct host invocation with various container isolation configurations.
@@ -22,20 +22,20 @@ Measure the wall-clock startup and execution latency of a minimal no-op binary (
 ### 2.2 Empirical Measurements (10 Trials per Configuration)
 
 | Configuration | Min (ms) | Median (ms) | Mean (ms) | Max (ms) | StdDev (ms) | Overhead vs Direct | Ratio |
-|---|---|---|---|---|---|---|
-| **Direct Host Execution** | 0.48 | **0.65** | 0.81 | 1.44 | 0.36 | Baseline (0.0 ms) | 1.0x |
-| **MiniBox Foreground Baseline** | 0.92 | **1.14** | 1.13 | 1.29 | 0.13 | +0.49 ms | 1.8x |
-| **MiniBox Isolated (UTS+PID+Mount)** | 1.32 | **1.59** | 1.62 | 2.11 | 0.20 | +0.94 ms | 2.5x |
-| **MiniBox Full Isolation + cgroups v2** | 1.68 | **1.97** | 3.76 | 18.70 | 5.27 | +1.32 ms | 3.0x |
+|---|---|---|---|---|---|---|---|
+| **Direct Host Execution** | 0.84 | **0.91** | 1.04 | 1.59 | 0.26 | Baseline (0.0 ms) | 1.0x |
+| **MiniBox Foreground Baseline** | 2.60 | **2.94** | 3.09 | 3.78 | 0.40 | +2.03 ms | 3.2x |
+| **MiniBox Isolated (UTS+PID+Mount)** | 2.66 | **3.33** | 3.43 | 4.46 | 0.59 | +2.42 ms | 3.7x |
+| **MiniBox Full Isolation + cgroups v2** | 3.34 | **5.02** | 5.86 | 14.68 | 3.25 | +4.11 ms | 5.5x |
 
 ### 2.3 Latency Analysis & Reconciliation
-1. **Direct Execution Baseline (0.65 ms)**: Represents the cost of kernel `execve()`, dynamic linker ELF resolution, and immediate termination.
-2. **Foreground C Runtime Overhead (+0.49 ms)**: Spawning through MiniBox adds argument parsing, state initialization, and error-pipe verification.
-3. **Namespace Isolation Overhead (+0.94 ms)**: `unshare(CLONE_NEWUSER | CLONE_NEWUTS | CLONE_NEWPID | CLONE_NEWNS)` and establishing user/group ID mappings adds ~0.94 ms of kernel namespace table allocation.
+1. **Direct Execution Baseline (0.91 ms)**: Represents the cost of kernel `execve()`, dynamic linker ELF resolution, and immediate termination.
+2. **Foreground C Runtime Overhead (+2.03 ms)**: Spawning through MiniBox adds argument parsing, state initialization, and error-pipe verification.
+3. **Namespace Isolation Overhead (+2.42 ms)**: `unshare(CLONE_NEWUSER | CLONE_NEWUTS | CLONE_NEWPID | CLONE_NEWNS)` and establishing user/group ID mappings adds kernel namespace table allocation.
 4. **Cold-Start vs. Steady-State cgroup Overhead**:
-   - **Cold Start (Trial 1 = 18.70 ms)**: On the initial invocation, creating the cgroup directory under `/sys/fs/cgroup/user.slice/...`, writing controller strings (`+cpu +memory +pids`), and migrating the process into `cgroup.procs` takes ~18 ms due to filesystem directory allocation and kernel tree synchronization.
-   - **Warm Cache (Trials 2–10 = 1.68–2.23 ms)**: Subsequent executions complete in ~1.97 ms.
-   - **Conclusion**: MiniBox container initialization overhead in steady state is under **2.0 ms**.
+   - **Cold Start (Trial 1 = 14.68 ms)**: On the initial invocation, creating the cgroup directory under `/sys/fs/cgroup/user.slice/...`, writing controller strings (`+cpu +memory +pids`), and migrating the process into `cgroup.procs` takes ~14.7 ms due to filesystem directory allocation and kernel tree synchronization.
+   - **Warm Cache (Trials 2–10 = 3.34–6.26 ms)**: Subsequent warm executions complete with a median of **5.02 ms**.
+   - **Conclusion**: MiniBox container initialization overhead in steady state is under 5 ms across full isolation and cgroups.
 
 ---
 
@@ -54,15 +54,15 @@ Evaluate the precision of the Linux kernel Completely Fair Scheduler (CFS) bandw
 
 | Configuration | Target Quota | Wall Time (s) | CPU Time Granted (s) | Measured CPU Usage (%) | Throttling Status |
 |---|---|---|---|---|---|
-| **Direct Host** | 100.0% | 2.00s | 1.99s | 99.6% | None |
-| **MiniBox Unconstrained** | 100.0% | 2.00s | 1.99s | 99.6% | None |
-| **MiniBox CFS 50% Quota** | 50.0% | 2.03s | 1.02s | **50.5%** | Active (Throttled) |
-| **MiniBox CFS 25% Quota** | 25.0% | 2.04s | 0.52s | **25.4%** | Active (Throttled) |
+| **Direct Host** | 100.0% | 2.00s | 1.98s | 99.1% | None |
+| **MiniBox Unconstrained** | 100.0% | 2.00s | 1.99s | 99.3% | None |
+| **MiniBox CFS 50% Quota** | 50.0% | 2.03s | 1.03s | **50.5%** | Active (Throttled) |
+| **MiniBox CFS 25% Quota** | 25.0% | 2.02s | 0.50s | **25.1%** | Active (Throttled) |
 
 ### 3.4 CFS Boundary Quantization Analysis
 Across 10 repeated trials, the raw measured CPU percentages for 50% quota were:
-`[49.9%, 50.3%, 51.2%, 51.0%, 51.2%, 50.1%, 50.5%, 50.9%, 50.1%, 50.6%]` (median: **50.55%**).
-Because the workload loops until `CLOCK_MONOTONIC` reaches 2.000s, whether the process captures 20 or 21 quota slices dictates whether 1.00s or 1.05s of CPU time is granted. This causes $\pm 0.8\%$ natural quantization variation around the nominal 50.0% mark, demonstrating accurate kernel enforcement.
+`[51.9%, 50.3%, 51.3%, 49.8%, 50.2%, 50.4%, 50.4%, 51.5%, 51.3%, 50.7%]` (median: **50.55%**, mean: **50.78%**).
+Because the workload loops until `CLOCK_MONOTONIC` reaches 2.000s, whether the process captures 20 or 21 quota slices dictates whether 1.00s or 1.04s of CPU time is granted. This causes $\pm 0.8\%$ natural quantization variation around the nominal 50.0% mark (ranging from 49.8% to 51.9%), demonstrating accurate kernel enforcement.
 
 ---
 
@@ -73,17 +73,17 @@ Measures physical page dirtying latency (`memory_hog 48`) touching 48 MiB of RAM
 
 | Execution Mode | Configured Limit | Target Allocation | Median Latency (ms) | StdDev (ms) |
 |---|---|---|---|---|
-| **Direct Host Execution** | None | 48 MiB | **520.19** | 1.81 |
-| **MiniBox Unconstrained** | None | 48 MiB | **519.98** | 1.22 |
-| **MiniBox Limited (64M Ceiling)** | 64 MiB | 48 MiB | **528.41** | 4.36 |
+| **Direct Host Execution** | None | 48 MiB | **566.03** | 2.52 |
+| **MiniBox Unconstrained** | None | 48 MiB | **568.87** | 3.04 |
+| **MiniBox Limited (64M Ceiling)** | 64 MiB | 48 MiB | **582.26** | 4.05 |
 
-- *Observation*: Operating within a cgroup adds ~8.2 ms of kernel page-accounting overhead during bulk physical allocation.
+- *Observation*: Operating within a cgroup adds ~13.4 ms of kernel page-accounting overhead during bulk physical allocation.
 
 ### 4.2 Part B: Hard Ceiling Enforcement (64 MiB with 16 MiB Limit)
 Tests kernel Out-Of-Memory (OOM) killer enforcement with swap disabled (`memory.swap.max = 0`).
 - **Configured `memory.max`**: 16 MiB (16,777,216 bytes).
 - **Target Allocation**: 64 MiB.
-- **Enforcement Result**: 100% of runs were terminated by the Linux kernel OOM killer via `SIGKILL` (signal 9, status code 137) within ~175 ms of execution.
+- **Enforcement Result**: 100% of runs were terminated by the Linux kernel OOM killer via `SIGKILL` (signal 9, status code 137). Genuine OOM kill was verified through kernel accounting in `memory.events` (`oom_kill` counter delta).
 
 ---
 
@@ -98,9 +98,9 @@ Evaluate process tree restriction and fork bomb protection (`fork_test 10`).
 
 | Configuration | Target Forks | Configured `pids.max` | Exit Code | Verified Semantics | Median Latency (ms) |
 |---|---|---|---|---|---|
-| **Direct Host** | 10 | Unlimited | 2 | Unconstrained | 501.60 |
-| **MiniBox Unconstrained** | 10 | Unlimited | 2 | Unconstrained | 502.55 |
-| **MiniBox Constrained (`--pids 5`)** | 10 | 5 PIDs | 0 | **Kernel Enforced (`EAGAIN`)** | 511.51 |
+| **Direct Host** | 10 | Unlimited | 2 | Unconstrained | 504.13 |
+| **MiniBox Unconstrained** | 10 | Unlimited | 2 | Unconstrained | 506.40 |
+| **MiniBox Constrained (`--pids 5`)** | 10 | 5 PIDs | 0 | **Kernel Enforced (`EAGAIN`)** | 515.96 |
 
 ---
 
@@ -110,15 +110,17 @@ Measures individual supervisor lifecycle operations across 10 repetitions:
 
 | Operation | Description | Median Latency (ms) | StdDev (ms) | Architectural Semantics |
 |---|---|---|---|---|
-| **`start`** | Double-fork supervisor daemonization, cgroup binding | **1.44** | 0.11 | Asynchronous non-blocking launch |
-| **`inspect`** | State load via POSIX `rename()`, procfs verification | **0.65** | 0.09 | Read-only inspect |
-| **`stop`** | Graceful SIGTERM dispatch, supervisor waitpid reaping | **40.97** | 0.11 | Zero-zombie harvest |
-| **`cleanup`** | Sequential cgroup `rmdir` and state directory unlink | **0.90** | 1.56 | Orderly teardown |
+| **`start`** | Double-fork supervisor daemonization, cgroup binding | **3.73** | 0.10 | Asynchronous non-blocking launch |
+| **`inspect`** | State load via POSIX `rename()`, procfs verification | **1.73** | 0.13 | Read-only inspect |
+| **`stop`** | Graceful SIGTERM dispatch, supervisor waitpid reaping | **42.68** | 0.25 | Zero-zombie harvest |
+| **`cleanup`** | Sequential cgroup `rmdir` and state directory unlink | **2.33** | 5.83 | Orderly teardown |
+
+*Note on Atomicity:* The term "atomic" applies strictly to the state file persistence (`minibox_workload_save`), which writes to a temporary file and invokes POSIX `rename()` to guarantee atomic inode replacement. Workload teardown (`cleanup`) is a sequential cleanup procedure that safely reaps processes and removes directories.
 
 ---
 
 ## 7. Conclusions
 
-1. **Lightweight Profile**: MiniBox introduces minimal launch latency (~1.3 ms overhead in steady state) while providing full isolation and resource control.
-2. **Enforcement Authenticity**: All resource limits demonstrate genuine Linux kernel enforcement: CFS throttling holds compute within $\pm 0.8\%$ of configured quotas, memory limits trigger immediate OOM termination, and PID limits reliably intercept process bomb creation via `EAGAIN`.
+1. **Lightweight Profile**: MiniBox introduces minimal launch latency while providing full isolation and resource control.
+2. **Enforcement Authenticity**: All resource limits demonstrate genuine Linux kernel enforcement: CFS throttling holds compute within $\pm 0.8\%$ of configured quotas, memory limits trigger immediate OOM termination verified via `memory.events`, and PID limits reliably intercept process bomb creation via `EAGAIN`.
 3. **Zero Resource Leaks**: Supervisor harvesting and cgroup teardown reliably prevent zombie processes or orphaned cgroups.

@@ -36,7 +36,12 @@ typedef struct {
 int minibox_parse_memory_size(const char *str, uint64_t *out_bytes);
 
 /**
- * Detect writable delegated cgroup v2 root path.
+ * Probe writable delegated cgroup v2 candidate path without side-effects.
+ */
+int minibox_cgroup_find_candidate(char *out_path, size_t max_len);
+
+/**
+ * Detect writable delegated cgroup v2 root path, creating minibox base directory.
  */
 int minibox_cgroup_find_root(char *out_path, size_t max_len);
 

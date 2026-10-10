@@ -41,6 +41,7 @@ typedef struct {
     minibox_resource_limits_t limits;
     char cgroup_path[MINIBOX_MAX_PATH_LEN];
     bool cgroup_active;
+    bool oom_killed;
 } minibox_workload_t;
 
 /**

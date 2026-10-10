@@ -302,6 +302,7 @@ static int cmd_run(int argc, char *argv[]) {
         printf("  },\n");
         print_json_string_field("  ", "cgroup_path", wl.cgroup_path, true);
         printf("  \"cgroup_active\": %s,\n", wl.cgroup_active ? "true" : "false");
+        printf("  \"oom_killed\": %s,\n", wl.oom_killed ? "true" : "false");
         if (wl.error_msg[0]) {
             print_json_string_field("  ", "error", wl.error_msg, false);
         } else {
@@ -618,7 +619,8 @@ static int cmd_inspect(int argc, char *argv[]) {
         printf("    \"pids_max\": %d\n", wl.limits.pids_max);
         printf("  },\n");
         print_json_string_field("  ", "cgroup_path", wl.cgroup_path, true);
-        printf("  \"cgroup_active\": %s\n", wl.cgroup_active ? "true" : "false");
+        printf("  \"cgroup_active\": %s,\n", wl.cgroup_active ? "true" : "false");
+        printf("  \"oom_killed\": %s\n", wl.oom_killed ? "true" : "false");
         printf("}\n");
     } else {
         printf("Workload Inspection: %s\n", wl.id);

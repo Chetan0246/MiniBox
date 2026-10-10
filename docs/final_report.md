@@ -126,17 +126,17 @@ The test framework incorporates 8 phases of automated regression testing plus a 
 Performance benchmarks were executed across 10 trials on native hardware (AMD Ryzen 7, 16 cores, Fedora 44, Linux Kernel 7.1.13):
 
 1. **Launch Latency**:
-   - Direct Host: **0.65 ms** median (0.81 ms mean, 0.48–1.44 ms range)
-   - MiniBox Baseline: **1.14 ms** median (1.13 ms mean, 0.92–1.29 ms range)
-   - MiniBox Namespaces: **1.59 ms** median (1.62 ms mean, 1.32–2.11 ms range)
-   - MiniBox Full Isolation + cgroups v2: **1.97 ms** median (3.76 ms mean, 1.68–18.70 ms range; +1.32 ms steady-state overhead)
-   - *Cold-Start vs. Steady-State*: The initial invocation incurs an 18.70 ms operating system penalty for cgroup directory initialization and controller enabling; subsequent warm iterations complete in 1.68–2.23 ms (median 1.97 ms).
+   - Direct Host: **0.91 ms** median (1.04 ms mean, 0.84–1.59 ms range)
+   - MiniBox Baseline: **2.94 ms** median (3.09 ms mean, 2.60–3.78 ms range)
+   - MiniBox Namespaces: **3.33 ms** median (3.43 ms mean, 2.66–4.46 ms range)
+   - MiniBox Full Isolation + cgroups v2: **5.02 ms** median (5.86 ms mean, 3.34–14.68 ms range)
+   - *Cold-Start vs. Steady-State*: The initial invocation incurs a 14.68 ms operating system penalty for cgroup directory initialization and controller enabling; subsequent warm iterations complete in 3.34–6.26 ms (median 5.02 ms).
 2. **CFS CPU Quota Accuracy**:
-   - Configured 50% quota over a 2.0s observation window yielded **50.55%** median utilization (50.58% mean, 1.02s CPU time granted over 2.03s wall time).
-   - Configured 25% quota yielded **25.35%** median utilization (25.46% mean, 0.52s CPU time granted over 2.04s wall time).
+   - Configured 50% quota over a 2.0s observation window yielded **50.55%** median utilization (50.78% mean, 1.03s CPU time granted over 2.03s wall time; 49.8%–51.9% range).
+   - Configured 25% quota yielded **25.10%** median utilization (25.09% mean, 0.50s CPU time granted over 2.02s wall time; 24.8%–25.6% range).
    - Natural $\pm 0.8\%$ variation is attributable to the 100 ms period boundary quantization over the 20-period observation window.
 3. **Memory Hard Limit Enforcement**:
-   - Allocating 64 MiB under a 16 MiB ceiling with swap disabled reliably triggered kernel OOM `SIGKILL` (status code 137) in 100% of trials within ~175 ms.
+   - Allocating 64 MiB under a 16 MiB ceiling with swap disabled reliably triggered kernel OOM `SIGKILL` (status code 137) in 100% of trials, verified through kernel accounting in `memory.events` (`oom_kill` counter delta).
 4. **PID Limits**:
    - Spawning 10 processes under `pids.max = 5` reliably triggered kernel rejection with `errno == EAGAIN` on the 5th child fork.
 
@@ -144,7 +144,7 @@ Performance benchmarks were executed across 10 trials on native hardware (AMD Ry
 
 ## 8. Limitations & Future Work
 
-1. **Filesystem Virtualization**: MiniBox mounts a private `/proc`, but shares the host root filesystem read-only. Future work could integrate `pivot_root` or an unprivileged `fuse-overlayfs` layer.
+1. **Filesystem Boundaries & Scope**: MiniBox establishes private mount propagation (`MS_REC | MS_PRIVATE`) and mounts a dedicated `/proc` filesystem so container workloads observe only their isolated process tree. However, MiniBox shares the host root filesystem directly and does *not* remount the root filesystem read-only or provide a rootfs chroot/pivot_root sandbox. MiniBox is designed as an educational systems tool demonstrating Linux namespaces and cgroup v2 resource limits—not as a security sandbox for untrusted code execution. Future iterations could explore unprivileged `fuse-overlayfs` layers or rootfs unsharing.
 2. **Virtual Networking**: Network isolation currently relies on host networking; future iterations could configure unprivileged `veth` pairs and `slirp4netns`.
 3. **CFS Granularity**: CFS bandwidth throttling operates at 100 ms period intervals; sub-100 ms compute bursts cannot be throttled.
 

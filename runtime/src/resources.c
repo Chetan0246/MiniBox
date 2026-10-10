@@ -56,9 +56,9 @@ int minibox_parse_memory_size(const char *str, uint64_t *out_bytes) {
     return 0;
 }
 
-static bool check_subtree_control_available(const char *dir) {
+static bool check_controllers_available(const char *dir) {
     char ctrl_file[600];
-    snprintf(ctrl_file, sizeof(ctrl_file), "%s/cgroup.subtree_control", dir);
+    snprintf(ctrl_file, sizeof(ctrl_file), "%s/cgroup.controllers", dir);
     FILE *f = fopen(ctrl_file, "r");
     if (!f) return false;
 
@@ -70,13 +70,12 @@ static bool check_subtree_control_available(const char *dir) {
     return (strstr(buf, "cpu") != NULL || strstr(buf, "memory") != NULL || strstr(buf, "pids") != NULL);
 }
 
-int minibox_cgroup_find_root(char *out_path, size_t max_len) {
-    if (g_minibox_cgroup_base[0] != 0) {
-        snprintf(out_path, max_len, "%s", g_minibox_cgroup_base);
-        return 0;
+int minibox_cgroup_find_candidate(char *out_path, size_t max_len) {
+    if (!out_path || max_len == 0) {
+        errno = EINVAL;
+        return -1;
     }
 
-    char candidate[512] = {0};
     uid_t uid = getuid();
 
     /* 1. Prefer standard systemd user slice paths where controllers are delegated */
@@ -89,73 +88,116 @@ int minibox_cgroup_find_root(char *out_path, size_t max_len) {
              "/sys/fs/cgroup/user.slice/user-%u.slice/user@%u.service",
              (unsigned int)uid, (unsigned int)uid);
 
-    if (access(user_app_slice, W_OK) == 0 && check_subtree_control_available(user_app_slice)) {
-        snprintf(candidate, sizeof(candidate), "%s", user_app_slice);
-    } else if (access(user_svc_slice, W_OK) == 0 && check_subtree_control_available(user_svc_slice)) {
-        snprintf(candidate, sizeof(candidate), "%s", user_svc_slice);
-    } else {
-        /* 2. Walk up from /proc/self/cgroup */
-        FILE *f = fopen("/proc/self/cgroup", "r");
-        if (!f) {
-            return -1;
-        }
+    char subtree_test[600];
 
-        char line[512] = {0};
-        char rel_path[256] = {0};
-        while (fgets(line, sizeof(line), f)) {
-            char *colon = strrchr(line, ':');
-            if (colon) {
-                char *p = colon + 1;
-                while (*p && (*p == ' ' || *p == '\t')) p++;
-                size_t len = strlen(p);
-                if (len > 0 && p[len - 1] == '\n') p[len - 1] = 0;
-                snprintf(rel_path, sizeof(rel_path), "%s", p);
-                break;
-            }
-        }
-        fclose(f);
+    snprintf(subtree_test, sizeof(subtree_test), "%s/cgroup.subtree_control", user_app_slice);
+    if (access(user_app_slice, W_OK | X_OK) == 0 &&
+        access(subtree_test, W_OK) == 0 &&
+        check_controllers_available(user_app_slice)) {
+        snprintf(out_path, max_len, "%s", user_app_slice);
+        return 0;
+    }
 
-        if (rel_path[0] == 0) {
-            return -1;
-        }
+    snprintf(subtree_test, sizeof(subtree_test), "%s/cgroup.subtree_control", user_svc_slice);
+    if (access(user_svc_slice, W_OK | X_OK) == 0 &&
+        access(subtree_test, W_OK) == 0 &&
+        check_controllers_available(user_svc_slice)) {
+        snprintf(out_path, max_len, "%s", user_svc_slice);
+        return 0;
+    }
 
-        char current[512];
-        snprintf(current, sizeof(current), "/sys/fs/cgroup%s", rel_path);
+    /* 2. Walk up from /proc/self/cgroup */
+    FILE *f = fopen("/proc/self/cgroup", "r");
+    if (!f) {
+        errno = ENOENT;
+        return -1;
+    }
 
-        bool found = false;
-        while (strlen(current) > strlen("/sys/fs/cgroup")) {
-            if (access(current, W_OK) == 0 && check_subtree_control_available(current)) {
-                snprintf(candidate, sizeof(candidate), "%s", current);
-                found = true;
-                break;
-            }
-            char *last_slash = strrchr(current, '/');
-            if (!last_slash || last_slash <= current + strlen("/sys/fs/cgroup")) {
-                break;
-            }
-            *last_slash = 0;
+    char line[512] = {0};
+    char rel_path[256] = {0};
+    while (fgets(line, sizeof(line), f)) {
+        char *colon = strrchr(line, ':');
+        if (colon) {
+            char *p = colon + 1;
+            while (*p && (*p == ' ' || *p == '\t')) p++;
+            size_t len = strlen(p);
+            if (len > 0 && p[len - 1] == '\n') p[len - 1] = 0;
+            snprintf(rel_path, sizeof(rel_path), "%s", p);
+            break;
         }
+    }
+    fclose(f);
 
-        if (!found) {
-            /* Fall back to current directory */
-            snprintf(candidate, sizeof(candidate), "/sys/fs/cgroup%s", rel_path);
+    if (rel_path[0] == 0) {
+        errno = ENOENT;
+        return -1;
+    }
+
+    char current[512];
+    snprintf(current, sizeof(current), "/sys/fs/cgroup%s", rel_path);
+
+    while (strlen(current) > strlen("/sys/fs/cgroup")) {
+        snprintf(subtree_test, sizeof(subtree_test), "%s/cgroup.subtree_control", current);
+        if (access(current, W_OK | X_OK) == 0 &&
+            access(subtree_test, W_OK) == 0 &&
+            check_controllers_available(current)) {
+            snprintf(out_path, max_len, "%s", current);
+            return 0;
         }
+        char *last_slash = strrchr(current, '/');
+        if (!last_slash || last_slash <= current + strlen("/sys/fs/cgroup")) {
+            break;
+        }
+        *last_slash = 0;
+    }
+
+    /* 3. If uid is 0 (root), check /sys/fs/cgroup directly */
+    if (uid == 0) {
+        snprintf(subtree_test, sizeof(subtree_test), "/sys/fs/cgroup/cgroup.subtree_control");
+        if (access("/sys/fs/cgroup", W_OK | X_OK) == 0 &&
+            access(subtree_test, W_OK) == 0 &&
+            check_controllers_available("/sys/fs/cgroup")) {
+            snprintf(out_path, max_len, "/sys/fs/cgroup");
+            return 0;
+        }
+    }
+
+    errno = EACCES;
+    return -1;
+}
+
+int minibox_cgroup_find_root(char *out_path, size_t max_len) {
+    if (g_minibox_cgroup_base[0] != 0) {
+        if (access(g_minibox_cgroup_base, W_OK | X_OK) == 0) {
+            snprintf(out_path, max_len, "%s", g_minibox_cgroup_base);
+            return 0;
+        }
+        g_minibox_cgroup_base[0] = 0;
+    }
+
+    char candidate[512] = {0};
+    if (minibox_cgroup_find_candidate(candidate, sizeof(candidate)) != 0) {
+        return -1;
     }
 
     /* Form base minibox root: <candidate>/minibox */
     char base_dir[600];
     snprintf(base_dir, sizeof(base_dir), "%s/minibox", candidate);
-    mkdir(base_dir, 0755);
+    if (mkdir(base_dir, 0755) != 0 && errno != EEXIST) {
+        return -1;
+    }
 
     /* Enable controllers in base_dir/cgroup.subtree_control */
     char subtree_file[700];
     snprintf(subtree_file, sizeof(subtree_file), "%s/cgroup.subtree_control", base_dir);
     int fd = open(subtree_file, O_WRONLY);
-    if (fd >= 0) {
-        const char *ctrls = "+cpu +memory +pids";
-        (void)write(fd, ctrls, strlen(ctrls));
-        close(fd);
+    if (fd < 0) {
+        return -1;
     }
+
+    const char *ctrls = "+cpu +memory +pids";
+    (void)write(fd, ctrls, strlen(ctrls));
+    close(fd);
 
     snprintf(g_minibox_cgroup_base, sizeof(g_minibox_cgroup_base), "%s", base_dir);
     snprintf(out_path, max_len, "%s", g_minibox_cgroup_base);
