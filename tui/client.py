@@ -12,6 +12,10 @@ from tui.models import (
 )
 
 
+class MiniBoxCommandError(RuntimeError):
+    """Raised when the minibox runtime returns output that cannot be interpreted."""
+
+
 class MiniBoxClient:
     """Non-blocking asynchronous client for MiniBox C runtime."""
 
@@ -21,6 +25,21 @@ class MiniBoxClient:
         else:
             repo_root = Path(__file__).resolve().parent.parent
             self.binary_path = str(repo_root / "bin" / "minibox")
+        # Last decoding/lookup failure, retained so the UI can report it instead of
+        # silently degrading to empty data.
+        self.last_error: Optional[str] = None
+
+    def _decode_json(self, out: str, context: str) -> Optional[Dict[str, Any]]:
+        """Parse runtime JSON output, recording a diagnostic on failure."""
+        try:
+            data = json.loads(out)
+        except json.JSONDecodeError as exc:
+            self.last_error = f"{context}: invalid JSON from runtime ({exc})"
+            return None
+        if not isinstance(data, dict):
+            self.last_error = f"{context}: expected a JSON object, got {type(data).__name__}"
+            return None
+        return data
 
     async def _run_command(self, *args: str) -> Tuple[int, str, str]:
         """Execute a minibox command asynchronously and return (exit_code, stdout, stderr)."""
@@ -39,7 +58,8 @@ class MiniBoxClient:
             try:
                 proc.kill()
                 await proc.wait()
-            except Exception:
+            except (ProcessLookupError, OSError):
+                # Already reaped or gone; nothing further to do while unwinding.
                 pass
             return 124, "", "Command timed out after 10 seconds"
 
@@ -49,42 +69,67 @@ class MiniBoxClient:
 
     async def get_capabilities(self) -> Capabilities:
         """Detect Linux capabilities supported on host."""
-        code, out, _ = await self._run_command("capabilities", "--json")
+        code, out, err = await self._run_command("capabilities", "--json")
         if code == 0 and out.strip():
-            try:
-                data = json.loads(out)
-                return Capabilities.from_dict(data)
-            except Exception:
-                pass
-        return Capabilities(reason="Failed to detect capabilities")
+            data = self._decode_json(out, "capabilities")
+            if data is not None:
+                try:
+                    return Capabilities.from_dict(data)
+                except (TypeError, ValueError) as exc:
+                    self.last_error = f"capabilities: malformed fields ({exc})"
+        self.last_error = self.last_error or (
+            f"capabilities: runtime exited {code}" + (f" ({err.strip()})" if err.strip() else "")
+        )
+        return Capabilities(reason=f"Failed to detect capabilities: {self.last_error}")
 
     async def get_metrics(self) -> Tuple[HostMetrics, List[WorkloadSummary]]:
         """Collect host metrics and summary metrics for all workloads."""
-        code, out, _ = await self._run_command("metrics", "--json")
+        code, out, err = await self._run_command("metrics", "--json")
         host = HostMetrics()
         workloads: List[WorkloadSummary] = []
         if code == 0 and out.strip():
-            try:
-                data = json.loads(out)
-                if "host" in data:
-                    host = HostMetrics.from_dict(data["host"])
-                if "workloads" in data and isinstance(data["workloads"], list):
-                    for w in data["workloads"]:
-                        workloads.append(WorkloadSummary.from_dict(w))
-            except Exception:
-                pass
+            data = self._decode_json(out, "metrics")
+            if data is not None:
+                raw_host = data.get("host")
+                if isinstance(raw_host, dict):
+                    try:
+                        host = HostMetrics.from_dict(raw_host)
+                    except (TypeError, ValueError) as exc:
+                        self.last_error = f"metrics: malformed host fields ({exc})"
+                raw_workloads = data.get("workloads")
+                if isinstance(raw_workloads, list):
+                    for w in raw_workloads:
+                        if not isinstance(w, dict):
+                            self.last_error = "metrics: skipping non-object workload entry"
+                            continue
+                        try:
+                            workloads.append(WorkloadSummary.from_dict(w))
+                        except (TypeError, ValueError) as exc:
+                            self.last_error = f"metrics: malformed workload entry ({exc})"
+        elif not self.last_error:
+            self.last_error = (
+                f"metrics: runtime exited {code}" + (f" ({err.strip()})" if err.strip() else "")
+            )
         return host, workloads
 
     async def get_workload_detail(self, workload_id: str) -> Optional[WorkloadDetail]:
         """Retrieve full workload inspection record."""
-        code, out, _ = await self._run_command("inspect", "--json", workload_id)
+        code, out, err = await self._run_command("inspect", "--json", workload_id)
         if code == 0 and out.strip():
-            try:
-                data = json.loads(out)
+            data = self._decode_json(out, f"inspect {workload_id}")
+            if data is not None:
                 if data.get("ok"):
-                    return WorkloadDetail.from_dict(data)
-            except Exception:
-                pass
+                    try:
+                        return WorkloadDetail.from_dict(data)
+                    except (TypeError, ValueError) as exc:
+                        self.last_error = f"inspect {workload_id}: malformed fields ({exc})"
+                else:
+                    self.last_error = str(data.get("error") or "workload not found")
+        elif not self.last_error:
+            self.last_error = (
+                f"inspect {workload_id}: runtime exited {code}"
+                + (f" ({err.strip()})" if err.strip() else "")
+            )
         return None
 
     async def get_workload_metrics(self, workload_id: str, sample_ms: int = 0) -> Optional[Dict[str, Any]]:
@@ -93,14 +138,18 @@ class MiniBoxClient:
         if sample_ms > 0:
             args.extend(["--sample-ms", str(sample_ms)])
         args.append(workload_id)
-        code, out, _ = await self._run_command(*args)
+        code, out, err = await self._run_command(*args)
         if code == 0 and out.strip():
-            try:
-                data = json.loads(out)
-                if data.get("ok"):
-                    return data
-            except Exception:
-                pass
+            data = self._decode_json(out, f"metrics {workload_id}")
+            if data is not None and data.get("ok"):
+                return data
+            elif data is not None:
+                self.last_error = str(data.get("error") or "metrics unavailable")
+        elif not self.last_error:
+            self.last_error = (
+                f"metrics {workload_id}: runtime exited {code}"
+                + (f" ({err.strip()})" if err.strip() else "")
+            )
         return None
 
     async def start_workload(
@@ -147,16 +196,13 @@ class MiniBoxClient:
 
         code, out, err = await self._run_command(*cmd)
         if out.strip():
-            try:
-                data = json.loads(out)
+            data = self._decode_json(out, "start")
+            if data is not None:
                 if data.get("ok"):
                     return True, "Workload launched successfully", data
-                else:
-                    msg = data.get("error", err.strip() or f"Error (code {code})")
-                    return False, msg, data
-            except Exception:
-                pass
-        msg = err.strip() or out.strip() or f"Failed to start workload (exit code {code})"
+                msg = data.get("error") or err.strip() or f"Error (code {code})"
+                return False, msg, data
+        msg = err.strip() or out.strip() or self.last_error or f"Failed to start workload (exit code {code})"
         return False, msg, {}
 
     async def stop_workload(self, workload_id: str, force: bool = False, signal_num: int = 15) -> Tuple[bool, str]:
@@ -170,13 +216,12 @@ class MiniBoxClient:
 
         code, out, err = await self._run_command(*cmd)
         if out.strip():
-            try:
-                data = json.loads(out)
-                if data.get("ok"):
-                    return True, f"Workload '{workload_id}' stopped (state: {data.get('state')})"
-            except Exception:
-                pass
-        return False, err.strip() or out.strip() or f"Failed to stop workload {workload_id}"
+            data = self._decode_json(out, f"stop {workload_id}")
+            if data is not None and data.get("ok"):
+                return True, f"Workload '{workload_id}' stopped (state: {data.get('state')})"
+        return False, (
+            err.strip() or out.strip() or self.last_error or f"Failed to stop workload {workload_id}"
+        )
 
     async def delete_workload(self, workload_id: str, force: bool = False) -> Tuple[bool, str]:
         """Delete a workload record."""
@@ -194,13 +239,11 @@ class MiniBoxClient:
         """Remove all completed/terminated workloads."""
         code, out, err = await self._run_command("cleanup", "--json")
         if code == 0 and out.strip():
-            try:
-                data = json.loads(out)
+            data = self._decode_json(out, "cleanup")
+            if data is not None:
                 count = data.get("removed_count", 0)
                 return True, f"Cleaned up {count} finished workload(s)"
-            except Exception:
-                pass
-        return False, err.strip() or out.strip() or "Cleanup failed"
+        return False, err.strip() or out.strip() or self.last_error or "Cleanup failed"
 
     async def get_workload_logs(self, workload_id: str) -> str:
         """Fetch stdout/stderr logs for a workload."""

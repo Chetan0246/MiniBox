@@ -7,7 +7,7 @@ TARGET = $(BIN_DIR)/minibox
 RUNTIME_OBJS = $(BUILD_DIR)/main.o $(BUILD_DIR)/process.o $(BUILD_DIR)/workload.o $(BUILD_DIR)/lifecycle.o $(BUILD_DIR)/isolation.o $(BUILD_DIR)/resources.o $(BUILD_DIR)/monitor.o
 EXAMPLES = $(BIN_DIR)/examples/hello $(BIN_DIR)/examples/exit_code $(BIN_DIR)/examples/crash_test $(BIN_DIR)/examples/sleeper $(BIN_DIR)/examples/check_isolation $(BIN_DIR)/examples/fork_test $(BIN_DIR)/examples/memory_hog $(BIN_DIR)/examples/cpu_hog
 
-.PHONY: all clean test test-phase1 test-phase2 test-phase3 test-phase4 test-phase5 test-phase6 test-phase7 test-phase8 test-behavioral benchmark demo examples
+.PHONY: all clean test test-phase1 test-phase2 test-phase3 test-phase4 test-phase5 test-phase6 test-phase7 test-phase8 test-behavioral test-regressions benchmark demo examples
 
 all: $(TARGET) examples
 
@@ -31,7 +31,7 @@ $(BUILD_DIR):
 $(BIN_DIR)/examples:
 	mkdir -p $(BIN_DIR)/examples
 
-test: all test-phase1 test-phase2 test-phase3 test-phase4 test-phase5 test-phase6 test-phase7 test-phase8 test-behavioral
+test: all test-phase1 test-phase2 test-phase3 test-phase4 test-phase5 test-phase6 test-phase7 test-phase8 test-behavioral test-regressions
 
 test-phase1: all
 	@echo "Running Phase 1 Test Suite..."
@@ -68,6 +68,10 @@ test-phase8: all
 test-behavioral: all
 	@echo "Running Behavioral Verification Test Suite..."
 	@bash tests/test_behavioral.sh
+
+test-regressions: all
+	@echo "Running Regression Test Suite..."
+	@bash tests/test_regressions.sh
 
 benchmark: all
 	@.venv/bin/python3 benchmarks/benchmark.py

@@ -20,34 +20,47 @@
 static void print_usage(const char *progname) {
     fprintf(stderr, "MiniBox TUI Core Runtime (v%s)\n\n", MINIBOX_VERSION);
     fprintf(stderr, "Usage:\n");
-    fprintf(stderr, "  %s capabilities [options]                     Report detected Linux capabilities\n", progname);
-    fprintf(stderr, "  %s run [options] <executable> [args...]       Run workload synchronously in foreground\n", progname);
-    fprintf(stderr, "  %s start [options] <executable> [args...]     Start workload asynchronously in background\n", progname);
-    fprintf(stderr, "  %s list [options]                             List all workloads\n", progname);
-    fprintf(stderr, "  %s inspect [options] <workload_id>            Inspect a workload\n", progname);
-    fprintf(stderr, "  %s metrics [options] [workload_id]            Collect resource metrics (alias: stats)\n", progname);
-    fprintf(stderr, "  %s stop [options] <workload_id>               Stop a running workload\n", progname);
-    fprintf(stderr, "  %s logs <workload_id>                         View workload stdout/stderr log\n", progname);
-    fprintf(stderr, "  %s delete [options] <workload_id>             Delete a workload record\n", progname);
-    fprintf(stderr, "  %s cleanup [options]                          Remove all completed/terminated workloads\n", progname);
-    fprintf(stderr, "  %s version                                    Show version information\n", progname);
-    fprintf(stderr, "  %s help                                       Show this help message\n\n", progname);
-    fprintf(stderr, "Options:\n");
-    fprintf(stderr, "  --id <id>          Explicit workload identifier\n");
+    fprintf(stderr, "  %s capabilities [--json]                                  Report detected Linux capabilities\n", progname);
+    fprintf(stderr, "  %s run [options] <executable> [args...]                 Run workload synchronously in foreground\n", progname);
+    fprintf(stderr, "  %s start [options] <executable> [args...]               Start workload asynchronously in background\n", progname);
+    fprintf(stderr, "  %s list [--json]                                         List all workloads\n", progname);
+    fprintf(stderr, "  %s inspect [--json] <workload_id>                        Inspect a workload\n", progname);
+    fprintf(stderr, "  %s metrics [--json] [--sample-ms <ms>] [<workload_id>]    Collect resource metrics (alias: stats)\n", progname);
+    fprintf(stderr, "  %s stop [--json] [--force] [--signal <num>] <id>         Stop a running workload\n", progname);
+    fprintf(stderr, "  %s logs <workload_id>                                    View workload stdout/stderr log\n", progname);
+    fprintf(stderr, "  %s delete [--json] [--force] <workload_id>               Delete a workload record\n", progname);
+    fprintf(stderr, "  %s cleanup [--json]                                      Remove all completed/terminated workloads\n", progname);
+    fprintf(stderr, "  %s version                                                Show version information\n", progname);
+    fprintf(stderr, "  %s help                                                   Show this help message\n", progname);
+
+    fprintf(stderr, "\nOptions for 'run' and 'start':\n");
+    fprintf(stderr, "  --id <id>          Explicit workload identifier (must not already exist)\n");
     fprintf(stderr, "  --name <name>      Friendly name for the workload\n");
     fprintf(stderr, "  --workdir <dir>    Working directory for the process\n");
     fprintf(stderr, "  --cpu <pct>        CPU quota percentage of 1 CPU (e.g. 50, 100)\n");
     fprintf(stderr, "  --memory <size>    Memory limit with units (e.g. 64M, 256M, 1G)\n");
     fprintf(stderr, "  --pids <max>       Maximum number of processes (e.g. 10)\n");
-    fprintf(stderr, "  --sample-ms <ms>   Sampling interval for instantaneous CPU %% (default: 100ms)\n");
     fprintf(stderr, "  --isolate          Enable full isolation (UTS, PID, and Mount namespaces)\n");
     fprintf(stderr, "  --uts              Enable UTS namespace isolation (isolated hostname)\n");
     fprintf(stderr, "  --hostname <name>  Custom hostname for container (enables UTS namespace)\n");
     fprintf(stderr, "  --pid-ns           Enable PID namespace isolation (process sees PID 1)\n");
     fprintf(stderr, "  --mount-ns         Enable mount namespace isolation\n");
+    fprintf(stderr, "  --json             Output results in JSON format (run/start only)\n");
+    fprintf(stderr, "  --                 Stop option parsing; everything after is the command\n");
+
+    fprintf(stderr, "\nOptions for 'metrics':\n");
     fprintf(stderr, "  --json             Output results in JSON format\n");
-    fprintf(stderr, "  --force            Force action (e.g. SIGKILL on stop, delete running)\n");
-    fprintf(stderr, "  --signal <num>     Signal number to send on stop (default: 15 / SIGTERM)\n");
+    fprintf(stderr, "  --sample-ms <ms>   CPU sampling window for a single workload, 0-%d ms (default: 100)\n",
+            MINIBOX_MAX_SAMPLE_MS);
+
+    fprintf(stderr, "\nOptions for 'stop':\n");
+    fprintf(stderr, "  --json             Output results in JSON format\n");
+    fprintf(stderr, "  --force            Escalate to SIGKILL if the process does not exit in time\n");
+    fprintf(stderr, "  --signal <num>     Signal number to send (default: 15 / SIGTERM)\n");
+
+    fprintf(stderr, "\nOptions for 'delete':\n");
+    fprintf(stderr, "  --json             Output results in JSON format\n");
+    fprintf(stderr, "  --force            Delete even while the workload is running\n");
 }
 
 static void print_version(void) {
@@ -128,6 +141,38 @@ static int parse_strict_positive_int(const char *str, int min_val, int max_val, 
     if (errno != 0 || endptr == str || *endptr != '\0') return -1;
     if (val < min_val || val > max_val) return -1;
     *out = (int)val;
+    return 0;
+}
+
+/*
+ * Extract the single positional argument expected by the read-only commands.
+ * Options listed in `value_opts` consume the following argument, which must therefore
+ * not be mistaken for the positional. Returns 0 and sets *out on success, 1 when no
+ * positional was supplied, and -1 when more than one was supplied.
+ */
+static int collect_positional_arg(int argc, char *argv[],
+                                  const char *const *value_opts,
+                                  const char **out) {
+    const char *found = NULL;
+    for (int i = 2; i < argc; i++) {
+        if (argv[i][0] == '-') {
+            if (value_opts) {
+                bool takes_value = false;
+                for (const char *const *o = value_opts; *o; o++) {
+                    if (strcmp(argv[i], *o) == 0) { takes_value = true; break; }
+                }
+                if (takes_value) i++;
+            }
+            continue;
+        }
+        if (found) {
+            fprintf(stderr, "Error: Unexpected extra argument '%s' (expected a single workload id)\n", argv[i]);
+            return -1;
+        }
+        found = argv[i];
+    }
+    if (!found) return 1;
+    *out = found;
     return 0;
 }
 
@@ -267,7 +312,15 @@ static int cmd_run(int argc, char *argv[]) {
 
     minibox_workload_t wl;
     if (minibox_workload_init(&wl, req_id, name, argv[exec_index], &argv[exec_index], work_dir) != 0) {
-        fprintf(stderr, "Error: Failed to initialize workload record\n");
+        int init_errno = errno;
+        if (init_errno == EEXIST) {
+            fprintf(stderr, "Error: Workload id '%s' already exists\n", req_id);
+        } else if (init_errno == EINVAL) {
+            fprintf(stderr, "Error: Invalid workload id '%s'\n", req_id);
+        } else {
+            fprintf(stderr, "Error: Failed to initialize workload record: %s\n",
+                    strerror(init_errno != 0 ? init_errno : EINVAL));
+        }
         return 1;
     }
     wl.limits = limits;
@@ -441,7 +494,15 @@ static int cmd_start(int argc, char *argv[]) {
 
     minibox_workload_t wl;
     if (minibox_workload_init(&wl, req_id, name, argv[exec_index], &argv[exec_index], work_dir) != 0) {
-        fprintf(stderr, "Error: Failed to initialize workload record\n");
+        int init_errno = errno;
+        if (init_errno == EEXIST) {
+            fprintf(stderr, "Error: Workload id '%s' already exists\n", req_id);
+        } else if (init_errno == EINVAL) {
+            fprintf(stderr, "Error: Invalid workload id '%s'\n", req_id);
+        } else {
+            fprintf(stderr, "Error: Failed to initialize workload record: %s\n",
+                    strerror(init_errno != 0 ? init_errno : EINVAL));
+        }
         return 1;
     }
     wl.limits = limits;
@@ -570,12 +631,12 @@ static int cmd_inspect(int argc, char *argv[]) {
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--json") == 0) {
             json_output = true;
-        } else if (argv[i][0] != '-') {
-            id = argv[i];
         }
     }
 
-    if (!id) {
+    int pos = collect_positional_arg(argc, argv, NULL, &id);
+    if (pos < 0) return 1;
+    if (pos > 0 || !id) {
         fprintf(stderr, "Error: Workload ID required for inspect\n");
         return 1;
     }
@@ -784,18 +845,21 @@ static int cmd_metrics(int argc, char *argv[]) {
             json_output = true;
         } else if (strcmp(argv[i], "--sample-ms") == 0) {
             if (i + 1 >= argc) {
-                fprintf(stderr, "Error: --sample-ms requires an argument\n");
+                fprintf(stderr, "Error: --sample-ms requires an argument (0-%d ms)\n", MINIBOX_MAX_SAMPLE_MS);
                 return 1;
             }
-            if (parse_strict_positive_int(argv[i + 1], 0, 60000, &sample_ms) != 0) {
-                fprintf(stderr, "Error: Invalid sample-ms '%s' (must be an integer between 0 and 60000)\n", argv[i + 1]);
+            if (parse_strict_positive_int(argv[i + 1], 0, MINIBOX_MAX_SAMPLE_MS, &sample_ms) != 0) {
+                fprintf(stderr, "Error: Invalid sample-ms '%s' (must be an integer between 0 and %d)\n",
+                        argv[i + 1], MINIBOX_MAX_SAMPLE_MS);
                 return 1;
             }
             i++;
-        } else if (argv[i][0] != '-') {
-            id = argv[i];
         }
     }
+
+    static const char *const metrics_value_opts[] = { "--sample-ms", NULL };
+    int pos = collect_positional_arg(argc, argv, metrics_value_opts, &id);
+    if (pos < 0) return 1;
 
     if (id) {
         minibox_workload_metrics_t m;
@@ -820,7 +884,42 @@ static int cmd_metrics(int argc, char *argv[]) {
 
     minibox_workload_t *workloads = NULL;
     size_t count = 0;
-    minibox_workload_list(&workloads, &count);
+    if (minibox_workload_list(&workloads, &count) != 0) {
+        if (json_output) {
+            printf("{\"ok\": false, \"error\": \"Failed to list workloads\"}\n");
+        } else {
+            fprintf(stderr, "Error: Failed to list workloads\n");
+        }
+        return 1;
+    }
+
+    /*
+     * Every per-workload snapshot reuses the single host measurement taken above.
+     * Re-measuring host CPU here used to cost a fixed sleep per workload.
+     */
+    minibox_workload_metrics_t *wms = NULL;
+    if (count > 0) {
+        wms = calloc(count, sizeof(*wms));
+        if (!wms) {
+            minibox_workload_free_list(workloads);
+            fprintf(stderr, "Error: Out of memory collecting metrics\n");
+            return 1;
+        }
+        for (size_t i = 0; i < count; i++) {
+            if (minibox_collect_workload_metrics_with_host(workloads[i].id, 0, &host, &wms[i]) != 0) {
+                /* Fall back to a summary derived from the listed record. */
+                memset(&wms[i], 0, sizeof(wms[i]));
+                snprintf(wms[i].workload_id, sizeof(wms[i].workload_id), "%s", workloads[i].id);
+                snprintf(wms[i].name, sizeof(wms[i].name), "%s", workloads[i].name);
+                wms[i].pid = workloads[i].pid;
+                wms[i].supervisor_pid = workloads[i].supervisor_pid;
+                wms[i].state = workloads[i].state;
+                wms[i].exit_code = workloads[i].exit_code;
+                wms[i].term_signal = workloads[i].term_signal;
+                wms[i].host = host;
+            }
+        }
+    }
 
     if (json_output) {
         printf("{\n");
@@ -837,17 +936,16 @@ static int cmd_metrics(int argc, char *argv[]) {
         printf("  },\n");
         printf("  \"workloads\": [\n");
         for (size_t i = 0; i < count; i++) {
-            minibox_workload_metrics_t wm;
-            minibox_collect_workload_metrics(workloads[i].id, 0, &wm);
+            const minibox_workload_metrics_t *wm = &wms[i];
             printf("    {\n");
-            print_json_string_field("      ", "id", wm.workload_id, true);
-            print_json_string_field("      ", "name", wm.name, true);
-            printf("      \"state\": \"%s\",\n", minibox_state_to_string(wm.state));
-            printf("      \"active\": %s,\n", wm.active ? "true" : "false");
-            printf("      \"pid\": %d,\n", wm.pid);
-            printf("      \"cpu_percent\": %.2f,\n", wm.cpu.usage_percent);
-            printf("      \"memory_bytes\": %lu,\n", (unsigned long)wm.memory.current_bytes);
-            printf("      \"pids_count\": %d\n", wm.pids.current_pids);
+            print_json_string_field("      ", "id", wm->workload_id, true);
+            print_json_string_field("      ", "name", wm->name, true);
+            printf("      \"state\": \"%s\",\n", minibox_state_to_string(wm->state));
+            printf("      \"active\": %s,\n", wm->active ? "true" : "false");
+            printf("      \"pid\": %d,\n", wm->pid);
+            printf("      \"cpu_percent\": %.2f,\n", wm->cpu.usage_percent);
+            printf("      \"memory_bytes\": %lu,\n", (unsigned long)wm->memory.current_bytes);
+            printf("      \"pids_count\": %d\n", wm->pids.current_pids);
             printf("    }%s\n", (i + 1 < count) ? "," : "");
         }
         printf("  ]\n");
@@ -869,34 +967,34 @@ static int cmd_metrics(int argc, char *argv[]) {
                    "WORKLOAD ID", "NAME", "PID", "STATE", "CPU %", "MEMORY", "PIDS");
             printf("--------------------------------------------------------------------------------\n");
             for (size_t i = 0; i < count; i++) {
-                minibox_workload_metrics_t wm;
-                minibox_collect_workload_metrics(workloads[i].id, 0, &wm);
+                const minibox_workload_metrics_t *wm = &wms[i];
                 char cpu_str[16];
                 char mem_str[16];
                 char pids_str[16];
-                if (wm.active && wm.cpu.valid) {
-                    snprintf(cpu_str, sizeof(cpu_str), "%.1f%%", wm.cpu.usage_percent);
+                if (wm->active && wm->cpu.valid) {
+                    snprintf(cpu_str, sizeof(cpu_str), "%.1f%%", wm->cpu.usage_percent);
                 } else {
                     snprintf(cpu_str, sizeof(cpu_str), "-");
                 }
-                if (wm.active && wm.memory.valid) {
-                    snprintf(mem_str, sizeof(mem_str), "%.1f MB", (double)wm.memory.current_bytes / (1024.0 * 1024.0));
+                if (wm->active && wm->memory.valid) {
+                    snprintf(mem_str, sizeof(mem_str), "%.1f MB", (double)wm->memory.current_bytes / (1024.0 * 1024.0));
                 } else {
                     snprintf(mem_str, sizeof(mem_str), "-");
                 }
-                if (wm.active && wm.pids.valid) {
-                    snprintf(pids_str, sizeof(pids_str), "%d", wm.pids.current_pids);
+                if (wm->active && wm->pids.valid) {
+                    snprintf(pids_str, sizeof(pids_str), "%d", wm->pids.current_pids);
                 } else {
                     snprintf(pids_str, sizeof(pids_str), "-");
                 }
                 printf("%-18s %-16s %-8d %-12s %-10s %-12s %-6s\n",
-                       wm.workload_id, wm.name, wm.pid,
-                       minibox_state_to_string(wm.state),
+                       wm->workload_id, wm->name, wm->pid,
+                       minibox_state_to_string(wm->state),
                        cpu_str, mem_str, pids_str);
             }
         }
     }
 
+    free(wms);
     minibox_workload_free_list(workloads);
     return 0;
 }
@@ -913,21 +1011,30 @@ static int cmd_stop(int argc, char *argv[]) {
         } else if (strcmp(argv[i], "--force") == 0 || strcmp(argv[i], "-f") == 0) {
             force = true;
         } else if (strcmp(argv[i], "--signal") == 0) {
-            if (i + 1 < argc) {
-                sig = atoi(argv[i + 1]);
-                i++;
+            if (i + 1 >= argc) {
+                fprintf(stderr, "Error: --signal requires a signal number\n");
+                return 1;
             }
-        } else if (argv[i][0] != '-') {
-            id = argv[i];
+            if (parse_strict_positive_int(argv[i + 1], 1, 64, &sig) != 0) {
+                fprintf(stderr, "Error: Invalid signal number '%s' (must be an integer between 1 and 64)\n",
+                        argv[i + 1]);
+                return 1;
+            }
+            i++;
         }
     }
 
-    if (!id) {
+    static const char *const stop_value_opts[] = { "--signal", NULL };
+    int pos = collect_positional_arg(argc, argv, stop_value_opts, &id);
+    if (pos < 0) return 1;
+    if (pos > 0 || !id) {
         fprintf(stderr, "Error: Workload ID required for stop\n");
         return 1;
     }
 
+    errno = 0;
     int rc = minibox_stop_workload(id, sig, force);
+    int stop_errno = errno;
 
     minibox_workload_t wl;
     if (minibox_workload_load(id, &wl) == 0) {
@@ -946,18 +1053,21 @@ static int cmd_stop(int argc, char *argv[]) {
         if (rc == 0) {
             printf("[minibox] Workload '%s' stopped (state: %s).\n", id, minibox_state_to_string(wl.state));
         } else {
-            fprintf(stderr, "[minibox] Failed to stop workload '%s': %s\n", id, strerror(errno));
+            fprintf(stderr, "[minibox] Failed to stop workload '%s': %s\n", id,
+                    strerror(stop_errno != 0 ? stop_errno : EINVAL));
         }
     }
     return (rc == 0) ? 0 : 1;
 }
 
 static int cmd_logs(int argc, char *argv[]) {
-    if (argc < 3) {
+    const char *id = NULL;
+    int pos = collect_positional_arg(argc, argv, NULL, &id);
+    if (pos < 0) return 1;
+    if (pos > 0 || !id) {
         fprintf(stderr, "Error: Workload ID required for logs\n");
         return 1;
     }
-    const char *id = argv[2];
 
     minibox_workload_t wl;
     if (minibox_workload_load(id, &wl) != 0) {
@@ -990,17 +1100,19 @@ static int cmd_delete(int argc, char *argv[]) {
             json_output = true;
         } else if (strcmp(argv[i], "--force") == 0 || strcmp(argv[i], "-f") == 0) {
             force = true;
-        } else if (argv[i][0] != '-') {
-            id = argv[i];
         }
     }
 
-    if (!id) {
+    int pos = collect_positional_arg(argc, argv, NULL, &id);
+    if (pos < 0) return 1;
+    if (pos > 0 || !id) {
         fprintf(stderr, "Error: Workload ID required for delete\n");
         return 1;
     }
 
+    errno = 0;
     int rc = minibox_workload_delete(id, force);
+    int delete_errno = errno;
 
     if (json_output) {
         printf("{\"ok\": %s, \"workload_id\": \"%s\"}\n", rc == 0 ? "true" : "false", id);
@@ -1008,7 +1120,8 @@ static int cmd_delete(int argc, char *argv[]) {
         if (rc == 0) {
             printf("[minibox] Workload '%s' deleted.\n", id);
         } else {
-            fprintf(stderr, "[minibox] Failed to delete workload '%s': %s\n", id, strerror(errno));
+            fprintf(stderr, "[minibox] Failed to delete workload '%s': %s\n", id,
+                    strerror(delete_errno != 0 ? delete_errno : EINVAL));
         }
     }
     return (rc == 0) ? 0 : 1;
@@ -1023,7 +1136,9 @@ static int cmd_cleanup(int argc, char *argv[]) {
     }
 
     size_t removed = 0;
+    errno = 0;
     int rc = minibox_workload_cleanup_completed(&removed);
+    int cleanup_errno = errno;
 
     if (json_output) {
         printf("{\"ok\": %s, \"removed_count\": %zu}\n", rc == 0 ? "true" : "false", removed);
@@ -1031,7 +1146,8 @@ static int cmd_cleanup(int argc, char *argv[]) {
         if (rc == 0) {
             printf("[minibox] Cleaned up %zu completed/terminated workload(s).\n", removed);
         } else {
-            fprintf(stderr, "[minibox] Cleanup failed: %s\n", strerror(errno));
+            fprintf(stderr, "[minibox] Cleanup failed: %s\n",
+                    strerror(cleanup_errno != 0 ? cleanup_errno : EINVAL));
         }
     }
     return (rc == 0) ? 0 : 1;

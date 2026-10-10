@@ -6,15 +6,32 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <linux/audit.h>
+#include <linux/capability.h>
+#include <linux/filter.h>
+#include <linux/seccomp.h>
 #include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mount.h>
+#include <sys/prctl.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#if defined(__x86_64__)
+#define MINIBOX_AUDIT_ARCH AUDIT_ARCH_X86_64
+#define MINIBOX_X32_SYSCALL_BIT 0x40000000u
+#elif defined(__aarch64__)
+#define MINIBOX_AUDIT_ARCH AUDIT_ARCH_AARCH64
+#define MINIBOX_X32_SYSCALL_BIT 0u
+#else
+#define MINIBOX_AUDIT_ARCH 0
+#define MINIBOX_X32_SYSCALL_BIT 0u
+#endif
 
 int minibox_detect_capabilities(minibox_capabilities_t *caps) {
     if (!caps) {
@@ -254,5 +271,149 @@ int minibox_prepare_isolation(const minibox_isolation_config_t *iso, const char 
         }
     }
 
+    return 0;
+}
+
+/*
+ * Syscalls a MiniBox workload must never make. None of these are usable by ordinary
+ * user-space programs, so denying them costs nothing while removing the syscalls
+ * most often reached for after an isolation escape or to tamper with the host.
+ */
+static const int g_denied_syscalls[] = {
+    __NR_init_module,
+    __NR_finit_module,
+    __NR_delete_module,
+    __NR_kexec_load,
+    __NR_kexec_file_load,
+    __NR_reboot,
+    __NR_swapon,
+    __NR_swapoff,
+    __NR_syslog,
+    __NR_ptrace,
+    __NR_bpf,
+    __NR_perf_event_open,
+    __NR_process_vm_readv,
+    __NR_process_vm_writev,
+    __NR_keyctl,
+    __NR_add_key,
+    __NR_request_key,
+    __NR_open_by_handle_at,
+    __NR_mount,
+    __NR_umount2,
+    __NR_pivot_root,
+    __NR_name_to_handle_at,
+};
+
+/* Capability bounding set retained for workloads (matches the common container default). */
+static const int g_allowed_caps[] = {
+    CAP_CHOWN,
+    CAP_DAC_OVERRIDE,
+    CAP_FOWNER,
+    CAP_FSETID,
+    CAP_KILL,
+    CAP_SETGID,
+    CAP_SETUID,
+    CAP_SETPCAP,
+    CAP_NET_BIND_SERVICE,
+    CAP_NET_RAW,
+    CAP_SYS_CHROOT,
+    CAP_MKNOD,
+    CAP_AUDIT_WRITE,
+    CAP_SETFCAP,
+};
+
+static bool cap_is_allowed(int cap) {
+    for (size_t i = 0; i < sizeof(g_allowed_caps) / sizeof(g_allowed_caps[0]); i++) {
+        if (g_allowed_caps[i] == cap) return true;
+    }
+    return false;
+}
+
+/*
+ * Install a seccomp-BPF filter that returns EPERM for the denied syscall set.
+ * Must run after PR_SET_NO_NEW_PRIVS, which the kernel requires for an
+ * unprivileged filter installation. Returns 0 on success, -1 with errno set otherwise.
+ */
+static int install_seccomp_filter(void) {
+    const size_t denied = sizeof(g_denied_syscalls) / sizeof(g_denied_syscalls[0]);
+    const size_t max_insns = denied * 2 + 16;
+    struct sock_filter *insns = calloc(max_insns, sizeof(*insns));
+    if (!insns) {
+        errno = ENOMEM;
+        return -1;
+    }
+
+    size_t n = 0;
+#if MINIBOX_AUDIT_ARCH != 0
+    /* Reject any ABI other than the one these syscall numbers were compiled for. */
+    insns[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                                             offsetof(struct seccomp_data, arch));
+    insns[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
+                                             MINIBOX_AUDIT_ARCH, 1, 0);
+    insns[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS);
+#endif
+#if MINIBOX_X32_SYSCALL_BIT != 0
+    /* Close the x32 ABI escape hatch, which would otherwise re-number every syscall. */
+    insns[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                                             offsetof(struct seccomp_data, nr));
+    insns[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JGE | BPF_K,
+                                             MINIBOX_X32_SYSCALL_BIT, 0, 1);
+    insns[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS);
+#else
+    insns[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                                             offsetof(struct seccomp_data, nr));
+#endif
+
+    const size_t deny_slot = n + denied + 1;   /* index of the shared deny return */
+    for (size_t i = 0; i < denied; i++) {
+        size_t at = n + i;
+        insns[at] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
+                                                (unsigned int)g_denied_syscalls[i],
+                                                (unsigned char)(deny_slot - at - 1), 0);
+    }
+    insns[n + denied] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
+    insns[deny_slot] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K,
+                                                    SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA));
+
+    struct sock_fprog prog = {
+        .len = (unsigned short)(deny_slot + 1),
+        .filter = insns,
+    };
+
+    long rc = syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, 0u, &prog);
+    int saved = (rc < 0) ? errno : 0;
+    free(insns);
+    if (rc < 0) {
+        errno = saved;
+        return -1;
+    }
+    return 0;
+}
+
+/*
+ * Apply runtime hardening in the workload process, immediately before execvp().
+ *
+ * MiniBox provides namespace isolation, not security isolation: the workload keeps
+ * the invoking user's privileges. These steps narrow what a workload can do to the
+ * host, and must run last, after the /proc mount and any capability-dependent setup.
+ *
+ * Returns 0 when hardening was applied, or -1 with errno set on a hard failure.
+ * When seccomp is unavailable the earlier steps still stand and -1 is returned so the
+ * caller can decide whether to continue.
+ */
+int minibox_apply_runtime_hardening(bool strict) {
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
+        return -1;
+    }
+
+    for (int cap = 0; cap <= CAP_LAST_CAP; cap++) {
+        if (cap_is_allowed(cap)) continue;
+        /* Dropping a capability we do not hold is not an error worth reporting. */
+        (void)prctl(PR_CAPBSET_DROP, (unsigned long)cap, 0, 0, 0);
+    }
+
+    if (install_seccomp_filter() != 0) {
+        if (strict) return -1;
+    }
     return 0;
 }

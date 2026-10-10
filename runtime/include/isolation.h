@@ -49,4 +49,15 @@ int minibox_detect_capabilities(minibox_capabilities_t *caps);
  */
 int minibox_prepare_isolation(const minibox_isolation_config_t *iso, const char *workload_id);
 
+/**
+ * Apply runtime hardening to the current (post-fork, pre-exec) process:
+ * PR_SET_NO_NEW_PRIVS, a reduced capability bounding set, and a seccomp-BPF filter
+ * denying kernel-module, tracing, reboot, mount and handle-resolution syscalls.
+ *
+ * Must be called after all namespace and /proc setup is finished. When `strict` is
+ * true a seccomp installation failure is reported as an error; otherwise the earlier
+ * steps still apply and the function returns 0.
+ */
+int minibox_apply_runtime_hardening(bool strict);
+
 #endif /* MINIBOX_ISOLATION_H */

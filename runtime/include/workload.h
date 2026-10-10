@@ -14,6 +14,15 @@
 #define MINIBOX_MAX_ARGS_LEN 2048
 #define MINIBOX_MAX_ERR_LEN 256
 
+/* Longest path built from a base directory plus a workload id and a fixed suffix. */
+#define MINIBOX_FULL_PATH_MAX (MINIBOX_MAX_PATH_LEN + MINIBOX_MAX_ID_LEN + 32)
+
+/* Capacity of the runtime state directory path, including the NUL terminator. */
+#define MINIBOX_STATE_DIR_MAX 512
+
+/* "<state dir>/<workload id>" - the directory that holds a workload's files. */
+#define MINIBOX_WL_DIR_MAX (MINIBOX_STATE_DIR_MAX + MINIBOX_MAX_ID_LEN + 2)
+
 /**
  * Record representing a managed workload.
  */
@@ -42,7 +51,33 @@ typedef struct {
     char cgroup_path[MINIBOX_MAX_PATH_LEN];
     bool cgroup_active;
     bool oom_killed;
+    uint64_t pid_start_time;   /* Kernel start time of `pid`, guards against PID reuse */
 } minibox_workload_t;
+
+/**
+ * Returns the kernel process start time (jiffies since boot) for a PID, or 0 if
+ * the process does not exist. Used to detect PID reuse before signalling.
+ */
+uint64_t minibox_pid_start_time(pid_t pid);
+
+/**
+ * Returns true only if the PID refers to a live, non-zombie process.
+ */
+bool minibox_pid_is_live(pid_t pid);
+
+/**
+ * Returns true once the PID no longer exists in the kernel at all (i.e. it has been
+ * reaped by its parent). Unlike minibox_pid_is_live() this stays false while the
+ * process is still a zombie, so callers cannot outrun a parent that is about to
+ * publish the child's real exit status.
+ */
+bool minibox_pid_is_gone(pid_t pid);
+
+/**
+ * Returns true if the PID is still the exact process MiniBox launched.
+ * A recorded start time of 0 falls back to a liveness-only check.
+ */
+bool minibox_pid_matches(pid_t pid, uint64_t recorded_start_time);
 
 /**
  * Returns current real-time clock timestamp in milliseconds.
@@ -54,6 +89,13 @@ uint64_t minibox_current_time_ms(void);
  * Creates directory hierarchy if not already present.
  */
 const char *minibox_get_state_dir(void);
+
+/**
+ * Copy the base runtime storage directory into a caller-supplied buffer.
+ * Using a fixed-size buffer keeps derived path lengths statically provable.
+ * Returns 0 on success, or -1 with errno set if the path does not fit.
+ */
+int minibox_get_state_dir_buf(char *out, size_t out_size);
 
 /**
  * Generate a unique workload identifier.

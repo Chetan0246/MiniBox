@@ -1,9 +1,10 @@
 import asyncio
-import os
+import sys
 from typing import Optional, List, Dict, Any
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, Horizontal, VerticalScroll
+from textual.css.query import NoMatches
 from textual.widgets import (
     Header,
     Footer,
@@ -142,9 +143,9 @@ class MiniBoxApp(App[None]):
             color = "bold green"
         try:
             log_widget = self.query_one("#events-log", RichLog)
-            log_widget.write(f"[{item.timestamp}] [[{color}]{item.level}[/{color}]] {item.message}")
-        except Exception:
-            pass
+        except NoMatches:
+            return
+        log_widget.write(f"[{item.timestamp}] [[{color}]{item.level}[/{color}]] {item.message}")
 
     async def _detect_capabilities(self) -> None:
         """Query kernel capabilities and update header and capabilities tab."""
@@ -169,8 +170,8 @@ class MiniBoxApp(App[None]):
         )
         try:
             self.query_one("#caps-content-static", Static).update(caps_text)
-        except Exception:
-            pass
+        except NoMatches:
+            self.log_event("WARN", "Capabilities panel is not mounted yet")
 
         self.log_event("INFO", f"Capabilities verified: {self.capabilities.reason or 'Linux environment ready'}")
 
@@ -238,16 +239,23 @@ class MiniBoxApp(App[None]):
                 )
 
             # Preserve selection
-            if curr_cursor_row is not None and curr_cursor_row < table.row_count:
+            if 0 <= curr_cursor_row < table.row_count:
                 table.cursor_coordinate = (curr_cursor_row, 0)
 
             # If workload log view is currently active and selected, auto-update
             selected_id = self._get_selected_workload_id()
-            if selected_id and self.query_one("#tabs-details", TabbedContent).active == "tab-logs":
-                await self._update_logs_view(selected_id)
+            if selected_id:
+                try:
+                    logs_active = self.query_one("#tabs-details", TabbedContent).active == "tab-logs"
+                except NoMatches:
+                    logs_active = False
+                if logs_active:
+                    await self._update_logs_view(selected_id)
 
-        except Exception as e:
+        except (asyncio.TimeoutError, OSError, ValueError) as e:
             self.log_event("ERROR", f"Refresh failed: {e}")
+        except Exception as e:
+            self.log_event("ERROR", f"Unexpected refresh error: {e!r}")
         finally:
             self._refreshing = False
 
@@ -255,14 +263,16 @@ class MiniBoxApp(App[None]):
         """Return the workload ID of the currently highlighted DataTable row."""
         try:
             table = self.query_one("#workloads-table", DataTable)
-            if table.row_count == 0:
-                return None
-            row_idx = table.cursor_row
-            row_key, _ = table.coordinate_to_cell_key((row_idx, 0))
-            if row_key and row_key.value:
-                return str(row_key.value)
-        except Exception:
-            pass
+        except NoMatches:
+            return None
+        if table.row_count == 0:
+            return None
+        try:
+            row_key, _ = table.coordinate_to_cell_key((table.cursor_row, 0))
+        except (IndexError, ValueError):
+            return None
+        if row_key and row_key.value:
+            return str(row_key.value)
         return None
 
     async def _update_logs_view(self, workload_id: str) -> None:
@@ -271,8 +281,8 @@ class MiniBoxApp(App[None]):
         try:
             log_view = self.query_one("#log-content-static", Static)
             log_view.update(f"[bold cyan]Logs for Workload: {workload_id}[/bold cyan]\n\n{logs or '(Log file is currently empty)'}")
-        except Exception:
-            pass
+        except NoMatches:
+            self.log_event("WARN", f"Log panel is not mounted; cannot show logs for {workload_id}")
 
     # ================= Action Handlers =================
 
@@ -423,31 +433,42 @@ class MiniBoxApp(App[None]):
 
 def main():
     """Main CLI entrypoint for launching MiniBox TUI."""
-    import sys
+    argv = sys.argv[1:]
 
-    if "--help" in sys.argv or "-h" in sys.argv:
+    if "--help" in argv or "-h" in argv:
         print("MiniBox TUI: Interactive Lightweight Linux Container Runtime Dashboard")
         print("\nUsage:\n  ./minibox-tui [options]\n")
         print("Options:")
         print("  --binary <path>    Path to minibox C runtime binary (default: ./bin/minibox)")
         print("  -h, --help         Show this help message")
         print("  -v, --version      Show version information")
-        return
+        return 0
 
-    if "--version" in sys.argv or "-v" in sys.argv:
+    if "--version" in argv or "-v" in argv:
         from tui import __version__
         print(f"MiniBox TUI version {__version__}")
-        return
+        return 0
 
     bin_path = None
-    if "--binary" in sys.argv:
-        idx = sys.argv.index("--binary")
-        if idx + 1 < len(sys.argv):
-            bin_path = sys.argv[idx + 1]
+    if "--binary" in argv:
+        idx = argv.index("--binary")
+        if idx + 1 >= len(argv):
+            print("Error: --binary requires a path argument", file=sys.stderr)
+            return 2
+        bin_path = argv[idx + 1]
+        if not bin_path:
+            print("Error: --binary requires a non-empty path", file=sys.stderr)
+            return 2
 
-    app = MiniBoxApp(binary_path=bin_path)
+    try:
+        app = MiniBoxApp(binary_path=bin_path)
+    except Exception as exc:  # pragma: no cover - startup diagnostics
+        print(f"Error: failed to initialise MiniBox TUI: {exc}", file=sys.stderr)
+        return 1
+
     app.run()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

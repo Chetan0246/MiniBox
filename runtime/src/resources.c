@@ -276,8 +276,9 @@ int minibox_cgroup_setup_workload(const char *workload_id,
 
     /* 1. Configure pids.max */
     if (limits->pids_max > 0) {
-        char path[800];
+        char path[1024];
         snprintf(path, sizeof(path), "%s/pids.max", wl_cg);
+        errno = 0;
         FILE *f = fopen(path, "w");
         if (f) {
             if (fprintf(f, "%d\n", limits->pids_max) >= 0 && fflush(f) == 0) {
@@ -285,7 +286,7 @@ int minibox_cgroup_setup_workload(const char *workload_id,
                     if (read_file_string(path, status->pids_max_readback, sizeof(status->pids_max_readback)) == 0) {
                         char *end_p = NULL;
                         long read_pids = strtol(status->pids_max_readback, &end_p, 10);
-                        if (read_pids == limits->pids_max) {
+                        if (end_p != status->pids_max_readback && read_pids == limits->pids_max) {
                             status->pids_applied = true;
                         }
                     }
@@ -294,8 +295,9 @@ int minibox_cgroup_setup_workload(const char *workload_id,
                 fclose(f);
             }
         }
+        /* Capture errno before any cleanup call can overwrite it. */
+        int saved_err = errno ? errno : EIO;
         if (!status->pids_applied) {
-            int saved_err = errno ? errno : EIO;
             snprintf(status->error_msg, sizeof(status->error_msg),
                      "Failed to apply pids limit: readback ('%s') did not match requested %d",
                      status->pids_max_readback[0] ? status->pids_max_readback : strerror(saved_err), limits->pids_max);
@@ -307,8 +309,9 @@ int minibox_cgroup_setup_workload(const char *workload_id,
 
     /* 2. Configure memory.max and disable swap bypass */
     if (limits->memory_max_bytes > 0) {
-        char path[800];
+        char path[1024];
         snprintf(path, sizeof(path), "%s/memory.max", wl_cg);
+        errno = 0;
         FILE *f = fopen(path, "w");
         if (f) {
             if (fprintf(f, "%lu\n", (unsigned long)limits->memory_max_bytes) >= 0 && fflush(f) == 0) {
@@ -316,7 +319,7 @@ int minibox_cgroup_setup_workload(const char *workload_id,
                     if (read_file_string(path, status->memory_max_readback, sizeof(status->memory_max_readback)) == 0) {
                         char *end_m = NULL;
                         unsigned long long read_mem = strtoull(status->memory_max_readback, &end_m, 10);
-                        if (read_mem == limits->memory_max_bytes) {
+                        if (end_m != status->memory_max_readback && read_mem == limits->memory_max_bytes) {
                             status->memory_applied = true;
                         }
                     }
@@ -325,8 +328,8 @@ int minibox_cgroup_setup_workload(const char *workload_id,
                 fclose(f);
             }
         }
+        int saved_err = errno ? errno : EIO;
         if (!status->memory_applied) {
-            int saved_err = errno ? errno : EIO;
             snprintf(status->error_msg, sizeof(status->error_msg),
                      "Failed to apply memory limit: readback ('%s') did not match requested %lu bytes",
                      status->memory_max_readback[0] ? status->memory_max_readback : strerror(saved_err), (unsigned long)limits->memory_max_bytes);
@@ -340,6 +343,7 @@ int minibox_cgroup_setup_workload(const char *workload_id,
         snprintf(swap_path, sizeof(swap_path), "%s/memory.swap.max", wl_cg);
         bool swap_applied = false;
         char swap_rb[64] = {0};
+        errno = 0;
         FILE *f_swap = fopen(swap_path, "w");
         if (f_swap) {
             if (fprintf(f_swap, "0\n") >= 0 && fflush(f_swap) == 0) {
@@ -352,8 +356,8 @@ int minibox_cgroup_setup_workload(const char *workload_id,
                 fclose(f_swap);
             }
         }
+        saved_err = errno ? errno : EIO;
         if (!swap_applied) {
-            int saved_err = errno ? errno : EIO;
             snprintf(status->error_msg, sizeof(status->error_msg),
                      "Failed to apply memory swap limit: readback ('%s') did not match 0",
                      swap_rb[0] ? swap_rb : strerror(saved_err));
@@ -368,6 +372,7 @@ int minibox_cgroup_setup_workload(const char *workload_id,
         char path[1100];
         snprintf(path, sizeof(path), "%s/cpu.max", wl_cg);
         uint64_t quota_us = ((uint64_t)MINIBOX_DEFAULT_CPU_PERIOD_US * (uint64_t)limits->cpu_percent) / 100ULL;
+        errno = 0;
         FILE *f = fopen(path, "w");
         if (f) {
             if (fprintf(f, "%lu %d\n", (unsigned long)quota_us, MINIBOX_DEFAULT_CPU_PERIOD_US) >= 0 && fflush(f) == 0) {
@@ -386,8 +391,8 @@ int minibox_cgroup_setup_workload(const char *workload_id,
                 fclose(f);
             }
         }
+        int saved_err = errno ? errno : EIO;
         if (!status->cpu_applied) {
-            int saved_err = errno ? errno : EIO;
             snprintf(status->error_msg, sizeof(status->error_msg),
                      "Failed to apply cpu limit: readback ('%s') did not match requested quota %lu/%d",
                      status->cpu_max_readback[0] ? status->cpu_max_readback : strerror(saved_err),

@@ -25,9 +25,18 @@ typedef struct {
     unsigned long active_ticks;
     unsigned long total_ticks;
     uint64_t timestamp_usec;
+    double cpu_percent;         /* Most recently computed host CPU utilization */
+    bool have_percent;
 } host_cpu_sample_t;
 
 static host_cpu_sample_t g_last_host_cpu = {0};
+
+/* Window used to obtain the first CPU reading, and to refresh a stale one. */
+#define HOST_CPU_SAMPLE_USEC     50000ULL
+/* Shortest delta window considered stable enough to report without re-sampling. */
+#define HOST_CPU_MIN_WINDOW_USEC 20000ULL
+/* Beyond this age the cached sample is refreshed with a fresh measurement window. */
+#define HOST_CPU_MAX_WINDOW_USEC 10000000ULL
 
 static int read_proc_stat_ticks(unsigned long *out_active, unsigned long *out_total) {
     FILE *f = fopen("/proc/stat", "r");
@@ -54,16 +63,18 @@ int minibox_collect_host_metrics(minibox_host_metrics_t *out_host) {
         return -1;
     }
     memset(out_host, 0, sizeof(*out_host));
+    bool meminfo_ok = false;
+    bool loadavg_ok = false;
 
     /* 1. Parse /proc/meminfo */
     FILE *f_mem = fopen("/proc/meminfo", "r");
     if (f_mem) {
         char line[256];
-        unsigned long long total_kb = 0, avail_kb = 0, free_kb = 0;
+        uint64_t total_kb = 0, avail_kb = 0, free_kb = 0;
         while (fgets(line, sizeof(line), f_mem)) {
-            if (sscanf(line, "MemTotal: %llu kB", &total_kb) == 1) continue;
-            if (sscanf(line, "MemAvailable: %llu kB", &avail_kb) == 1) continue;
-            if (sscanf(line, "MemFree: %llu kB", &free_kb) == 1) continue;
+            if (sscanf(line, "MemTotal: %lu kB", &total_kb) == 1) continue;
+            if (sscanf(line, "MemAvailable: %lu kB", &avail_kb) == 1) continue;
+            if (sscanf(line, "MemFree: %lu kB", &free_kb) == 1) continue;
         }
         fclose(f_mem);
 
@@ -72,6 +83,7 @@ int minibox_collect_host_metrics(minibox_host_metrics_t *out_host) {
         if (out_host->mem_total_bytes >= out_host->mem_avail_bytes) {
             out_host->mem_used_bytes = out_host->mem_total_bytes - out_host->mem_avail_bytes;
         }
+        meminfo_ok = (total_kb > 0);
     }
 
     /* 2. Parse /proc/loadavg */
@@ -82,90 +94,100 @@ int minibox_collect_host_metrics(minibox_host_metrics_t *out_host) {
             out_host->load_1m = l1;
             out_host->load_5m = l5;
             out_host->load_15m = l15;
+            loadavg_ok = true;
         }
         fclose(f_load);
     }
 
-    /* 3. Sample host live CPU% using delta measurements */
-    unsigned long active1 = 0, total1 = 0;
+    /*
+     * 3. Host CPU utilization from /proc/stat deltas.
+     *
+     * Re-sampling on every call costs a fixed sleep each time, which made one
+     * `minibox metrics` invocation take ~50 ms per workload. The last measurement is
+     * therefore cached: back-to-back calls in one process reuse it, and only a cold
+     * start or a genuinely stale cache pays for a measurement window.
+     */
     unsigned long active2 = 0, total2 = 0;
-    uint64_t now = get_monotonic_usec();
-
-    if (g_last_host_cpu.total_ticks == 0) {
-        /* Cold start: sample across a brief 50ms interval */
-        if (read_proc_stat_ticks(&active1, &total1) == 0) {
-            usleep(50000); /* 50 ms window */
-            if (read_proc_stat_ticks(&active2, &total2) == 0) {
-                unsigned long dt_total = (total2 >= total1) ? (total2 - total1) : 0;
-                unsigned long dt_active = (active2 >= active1) ? (active2 - active1) : 0;
-                if (dt_total > 0) {
-                    out_host->cpu_percent = ((double)dt_active / (double)dt_total) * 100.0;
-                }
-                g_last_host_cpu.active_ticks = active2;
-                g_last_host_cpu.total_ticks = total2;
-                g_last_host_cpu.timestamp_usec = get_monotonic_usec();
-            }
+    if (read_proc_stat_ticks(&active2, &total2) == 0) {
+        uint64_t now = get_monotonic_usec();
+        bool have_cache = (g_last_host_cpu.total_ticks != 0);
+        uint64_t dt_usec = 0;
+        if (have_cache && now > g_last_host_cpu.timestamp_usec) {
+            dt_usec = now - g_last_host_cpu.timestamp_usec;
         }
-    } else {
-        /* Successive call: check elapsed time since previous sample */
-        if (read_proc_stat_ticks(&active2, &total2) == 0) {
-            uint64_t dt_usec = (now > g_last_host_cpu.timestamp_usec) ?
-                               (now - g_last_host_cpu.timestamp_usec) : 0;
-            if (dt_usec >= 20000 && dt_usec <= 10000000ULL && total2 > g_last_host_cpu.total_ticks) {
-                /* Use delta against cached sample (e.g. within TUI refresh loop) */
-                unsigned long dt_total = total2 - g_last_host_cpu.total_ticks;
-                unsigned long dt_active = (active2 >= g_last_host_cpu.active_ticks) ?
-                                          (active2 - g_last_host_cpu.active_ticks) : 0;
+
+        bool take_fresh_window = false;
+        if (!have_cache) {
+            take_fresh_window = true;
+        } else if (dt_usec >= HOST_CPU_MIN_WINDOW_USEC &&
+                   dt_usec <= HOST_CPU_MAX_WINDOW_USEC &&
+                   total2 > g_last_host_cpu.total_ticks) {
+            /* Delta against the cached sample is wide enough to be meaningful. */
+            unsigned long dt_total = total2 - g_last_host_cpu.total_ticks;
+            unsigned long dt_active = (active2 >= g_last_host_cpu.active_ticks) ?
+                                      (active2 - g_last_host_cpu.active_ticks) : 0;
+            if (dt_total > 0) {
+                g_last_host_cpu.cpu_percent = ((double)dt_active / (double)dt_total) * 100.0;
+                g_last_host_cpu.have_percent = true;
+            }
+            g_last_host_cpu.active_ticks = active2;
+            g_last_host_cpu.total_ticks = total2;
+            g_last_host_cpu.timestamp_usec = now;
+        } else if (dt_usec > HOST_CPU_MAX_WINDOW_USEC) {
+            take_fresh_window = true;
+        }
+        /* Otherwise the cache is younger than the minimum window: reuse it as-is. */
+
+        if (take_fresh_window) {
+            usleep(HOST_CPU_SAMPLE_USEC);
+            unsigned long active3 = 0, total3 = 0;
+            if (read_proc_stat_ticks(&active3, &total3) == 0) {
+                unsigned long base_active = have_cache ? g_last_host_cpu.active_ticks : 0;
+                unsigned long base_total = have_cache ? g_last_host_cpu.total_ticks : 0;
+                unsigned long dt_total = (total3 > base_total) ? (total3 - base_total) : 0;
+                unsigned long dt_active = (active3 > base_active) ? (active3 - base_active) : 0;
                 if (dt_total > 0) {
-                    out_host->cpu_percent = ((double)dt_active / (double)dt_total) * 100.0;
+                    g_last_host_cpu.cpu_percent = ((double)dt_active / (double)dt_total) * 100.0;
+                    g_last_host_cpu.have_percent = true;
                 }
-                g_last_host_cpu.active_ticks = active2;
-                g_last_host_cpu.total_ticks = total2;
-                g_last_host_cpu.timestamp_usec = now;
-            } else {
-                /* Sample afresh over 50ms window */
-                usleep(50000);
-                unsigned long active3 = 0, total3 = 0;
-                if (read_proc_stat_ticks(&active3, &total3) == 0) {
-                    unsigned long dt_total = (total3 >= total2) ? (total3 - total2) : 0;
-                    unsigned long dt_active = (active3 >= active2) ? (active3 - active2) : 0;
-                    if (dt_total > 0) {
-                        out_host->cpu_percent = ((double)dt_active / (double)dt_total) * 100.0;
-                    }
-                    g_last_host_cpu.active_ticks = active3;
-                    g_last_host_cpu.total_ticks = total3;
-                    g_last_host_cpu.timestamp_usec = get_monotonic_usec();
-                }
+                g_last_host_cpu.active_ticks = active3;
+                g_last_host_cpu.total_ticks = total3;
+                g_last_host_cpu.timestamp_usec = get_monotonic_usec();
             }
         }
     }
 
-    out_host->valid = true;
+    out_host->cpu_percent = g_last_host_cpu.cpu_percent;
+
+    /* Only claim validity when something was actually measured. */
+    out_host->valid = meminfo_ok || loadavg_ok || g_last_host_cpu.have_percent;
     return 0;
 }
 
 static int read_cgroup_uint64(const char *cgroup_path, const char *file, uint64_t *out_val) {
-    char path[800];
+    char path[1024];
     snprintf(path, sizeof(path), "%s/%s", cgroup_path, file);
     FILE *f = fopen(path, "r");
     if (!f) return -1;
 
     char buf[64] = {0};
+    bool got = false;
     if (fgets(buf, sizeof(buf), f)) {
-        fclose(f);
         if (strncmp(buf, "max", 3) == 0) {
             *out_val = 0;
-            return 0;
-        }
-        char *endptr = NULL;
-        unsigned long long v = strtoull(buf, &endptr, 10);
-        if (endptr != buf) {
-            *out_val = (uint64_t)v;
-            return 0;
+            got = true;
+        } else {
+            char *endptr = NULL;
+            errno = 0;
+            unsigned long long v = strtoull(buf, &endptr, 10);
+            if (endptr != buf && errno == 0) {
+                *out_val = (uint64_t)v;
+                got = true;
+            }
         }
     }
     fclose(f);
-    return -1;
+    return got ? 0 : -1;
 }
 
 static int read_cgroup_cpu_stat(const char *cgroup_path, minibox_cpu_metrics_t *cpu) {
@@ -259,13 +281,15 @@ static int read_proc_pid_status(pid_t pid, uint64_t *out_rss_bytes, uint64_t *ou
     return 0;
 }
 
-int minibox_collect_workload_metrics(const char *workload_id,
-                                     int sample_window_ms,
-                                     minibox_workload_metrics_t *out_metrics) {
+int minibox_collect_workload_metrics_with_host(const char *workload_id,
+                                               int sample_window_ms,
+                                               const minibox_host_metrics_t *host,
+                                               minibox_workload_metrics_t *out_metrics) {
     if (!workload_id || !out_metrics) {
         errno = EINVAL;
         return -1;
     }
+    if (sample_window_ms < 0) sample_window_ms = 0;
     memset(out_metrics, 0, sizeof(*out_metrics));
 
     minibox_workload_t wl;
@@ -293,17 +317,20 @@ int minibox_collect_workload_metrics(const char *workload_id,
         }
     }
 
-    /* Check if process is actively running */
+    /* Check if process is actively running (zombies and recycled PIDs do not count) */
     bool is_live = false;
     if (!minibox_state_is_terminal(wl.state) && wl.pid > 1) {
-        if (kill(wl.pid, 0) == 0 || errno == EPERM) {
-            is_live = true;
-        }
+        is_live = minibox_pid_is_live(wl.pid);
     }
     out_metrics->active = is_live;
 
-    /* Always collect host-wide metrics for comparison */
-    minibox_collect_host_metrics(&out_metrics->host);
+    /* Attach the host snapshot. Reuse the caller's when supplied so that listing
+     * many workloads does not pay for a fresh host CPU sample each time. */
+    if (host) {
+        out_metrics->host = *host;
+    } else {
+        minibox_collect_host_metrics(&out_metrics->host);
+    }
 
     /* If workload is not live, dynamic metrics are unavailable */
     if (!is_live) {
@@ -369,7 +396,7 @@ int minibox_collect_workload_metrics(const char *workload_id,
             uint64_t t1 = get_monotonic_usec();
             uint64_t cpu1 = out_metrics->cpu.usage_usec;
 
-            usleep(sample_window_ms * 1000);
+            usleep((useconds_t)sample_window_ms * 1000u);
 
             minibox_cpu_metrics_t cpu_sample2 = {0};
             if (has_cg_cpu) {
@@ -409,4 +436,10 @@ int minibox_collect_workload_metrics(const char *workload_id,
     }
 
     return 0;
+}
+
+int minibox_collect_workload_metrics(const char *workload_id,
+                                     int sample_window_ms,
+                                     minibox_workload_metrics_t *out_metrics) {
+    return minibox_collect_workload_metrics_with_host(workload_id, sample_window_ms, NULL, out_metrics);
 }

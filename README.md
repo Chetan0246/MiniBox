@@ -20,7 +20,9 @@ Built entirely from first principles using native Linux system calls, MiniBox re
   - **Process-Tree Restrictions (`pids.max`)**: Defends against fork bombs by rejecting excess child creation with `errno == EAGAIN`.
   - **Safe Cleanup**: Signals `cgroup.kill` and drains kernel accounting before unlinking directories.
 - **Dynamic Resource Telemetry**: Real-time rate-based CPU% calculation, Resident Set Size (`VmRSS`), peak memory, and CFS throttling statistics sampled from `/proc` and cgroups v2.
-- **Crash-Resilient State Machine**: 7-state finite state machine with terminal-state invariants, serialized atomically via temporary files and POSIX `rename()`.
+- **Crash-Resilient State Machine**: 7-state finite state machine with terminal-state invariants, serialized atomically via per-writer unique temporary files (`mkstemp`) and POSIX `rename()`.
+- **Runtime Hardening**: Each workload runs with `PR_SET_NO_NEW_PRIVS`, a reduced capability bounding set, and a seccomp-BPF filter denying kernel-module, tracing (`ptrace`, `perf_event_open`, `bpf`), reboot, mount and handle-resolution syscalls. The in-container `/proc` is mounted `MS_NOSUID | MS_NODEV | MS_NOEXEC`.
+- **PID-Identity-Safe Signalling**: Workload records persist the kernel process start time, so `stop` and `delete --force` can never signal a PID that was recycled by an unrelated process.
 - **Interactive Terminal UI**: Full-screen terminal dashboard built with Textual, featuring live workload monitoring, one-click creation templates, inspection dialogs, log viewing, and a built-in benchmark runner.
 - **Multi-Trial Empirical Benchmarks**: Rigorous performance evaluation suite measuring startup latency, CFS accuracy, and lifecycle latency across 10-trial distributions.
 
@@ -205,6 +207,7 @@ make test-phase6       # Terminal UI and Textual headless pilot tests
 make test-phase7       # Performance benchmarks and behavioral assertions
 make test-phase8       # Final integration, documentation, and demo verification
 make test-behavioral   # Kernel isolation, strict validation, and security hardening
+make test-regressions  # Correctness regressions (see tests/test_regressions.sh)
 
 # Execute the complete 13-step demonstration scenario
 make demo
@@ -227,8 +230,9 @@ make demo
 ## Limitations
 
 1. **Filesystem Isolation Scope**: MiniBox provides process tree, hostname, and private `/proc` mount isolation (`CLONE_NEWNS` + `CLONE_NEWUSER` + `CLONE_NEWPID`), but shares the host filesystem without rootfs sandboxing (no `chroot` or `pivot_root`). MiniBox is designed as an educational tool demonstrating kernel mechanisms, not a secure jail for untrusted workloads.
-2. **Cold-Start Latency**: The very first container invocation incurs an initial ~10–18 ms operating system penalty for cgroup tree synchronization; subsequent warm executions complete in ~1.97 ms.
-3. **CFS Granularity**: CFS throttles over 100 ms periods; burst compute workloads executing in under 100 ms cannot be throttled.
+2. **Privilege Model**: The user namespace maps a single UID/GID (`0 -> <caller>`), so a workload runs with the invoking user's own host privileges rather than a deprivileged identity. Namespaces and resource limits constrain what a workload *observes* and *consumes*; they do not by themselves prevent it from touching host resources it could already reach. The runtime hardening described above (reduced capability bounding set, `no_new_privs`, seccomp filter) narrows this further, but a full security boundary would require a subordinate UID range and a real rootfs.
+3. **Cold-Start Latency**: The very first container invocation incurs an initial ~10–18 ms operating system penalty for cgroup tree synchronization; subsequent warm executions complete in ~1.97 ms.
+4. **CFS Granularity**: CFS throttles over 100 ms periods; burst compute workloads executing in under 100 ms cannot be throttled.
 
 ---
 

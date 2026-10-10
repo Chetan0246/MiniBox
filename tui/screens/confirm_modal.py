@@ -1,5 +1,6 @@
 from textual.app import ComposeResult
 from textual.containers import Grid, Vertical, Horizontal
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Button, Label, Checkbox
 
@@ -57,7 +58,7 @@ class ConfirmModal(ModalScreen[tuple[bool, bool]]):
             if self.show_force:
                 try:
                     force = self.query_one("#force-checkbox", Checkbox).value
-                except Exception:
+                except NoMatches:
                     force = False
             self.dismiss((True, force))
         else:

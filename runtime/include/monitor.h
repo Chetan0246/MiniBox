@@ -87,4 +87,21 @@ int minibox_collect_workload_metrics(const char *workload_id,
                                      int sample_window_ms,
                                      minibox_workload_metrics_t *out_metrics);
 
+/**
+ * As minibox_collect_workload_metrics(), but reuses a caller-supplied host snapshot
+ * when `host` is non-NULL. Listing many workloads with one host sample avoids
+ * re-measuring (and re-sleeping on) host CPU utilization once per workload.
+ */
+int minibox_collect_workload_metrics_with_host(const char *workload_id,
+                                               int sample_window_ms,
+                                               const minibox_host_metrics_t *host,
+                                               minibox_workload_metrics_t *out_metrics);
+
+/**
+ * Largest CPU sampling window accepted by the metrics commands, in milliseconds.
+ * Larger values are rejected so a sampling window can never turn into an
+ * effectively unbounded (or overflowing) sleep.
+ */
+#define MINIBOX_MAX_SAMPLE_MS 5000
+
 #endif /* MINIBOX_MONITOR_H */

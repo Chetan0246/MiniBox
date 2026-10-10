@@ -175,6 +175,9 @@ int minibox_run_process(const minibox_process_config_t *config, minibox_process_
     return 0;
 }
 
+/* Hardened flags for the in-container /proc mount. */
+#define MINIBOX_PROC_MOUNT_FLAGS (MS_NOSUID | MS_NODEV | MS_NOEXEC)
+
 static volatile sig_atomic_t g_foreground_child_pid = 0;
 static volatile sig_atomic_t g_pid1_child = 0;
 
@@ -329,15 +332,17 @@ int minibox_run_workload_foreground(minibox_workload_t *wl,
             }
 
             /* In child: this process is PID 1 in the new PID namespace.
-             * Mount new /proc filesystem as a mandatory step for PID isolation. */
-            if (mount("proc", "/proc", "proc", 0, NULL) != 0) {
+             * Mount new /proc filesystem as a mandatory step for PID isolation.
+             * MS_NOSUID|MS_NODEV|MS_NOEXEC matches what a hardened runtime does and
+             * prevents suid/device/exec tricks through the freshly mounted /proc. */
+            if (mount("proc", "/proc", "proc", MINIBOX_PROC_MOUNT_FLAGS, NULL) != 0) {
                 int err = errno;
                 (void)write(pipefd[1], &err, sizeof(err));
                 close(pipefd[1]);
                 _exit(127);
             }
         } else if (iso && iso->enable_mount) {
-            if (mount("proc", "/proc", "proc", 0, NULL) != 0) {
+            if (mount("proc", "/proc", "proc", MINIBOX_PROC_MOUNT_FLAGS, NULL) != 0) {
                 int err = errno;
                 (void)write(pipefd[1], &err, sizeof(err));
                 close(pipefd[1]);
@@ -363,6 +368,13 @@ int minibox_run_workload_foreground(minibox_workload_t *wl,
             }
         }
 
+        /* Last step before exec: lock down what the workload can reach. */
+        if (minibox_apply_runtime_hardening(false) != 0) {
+            int err = errno;
+            (void)write(pipefd[1], &err, sizeof(err));
+            close(pipefd[1]);
+            _exit(127);
+        }
 
         char *const default_argv[] = {wl->executable, NULL};
         char *const *exec_argv = argv ? argv : default_argv;
@@ -376,6 +388,8 @@ int minibox_run_workload_foreground(minibox_workload_t *wl,
     }
 
     wl->pid = pid;
+    /* Record the kernel start time so a recycled PID is never signalled later. */
+    wl->pid_start_time = minibox_pid_start_time(pid);
     g_foreground_child_pid = pid;
     close(pipefd[1]);
 
@@ -461,18 +475,38 @@ int minibox_run_workload_foreground(minibox_workload_t *wl,
     minibox_workload_save(wl);
 
     int status = 0;
+    bool wait_ok = false;
     while (1) {
         pid_t w = waitpid(pid, &status, 0);
         if (w < 0) {
             if (errno == EINTR) continue;
             break;
         }
+        wait_ok = true;
         break;
     }
 
     sigaction(SIGINT, &sa_old_int, NULL);
     sigaction(SIGTERM, &sa_old_term, NULL);
     g_foreground_child_pid = 0;
+
+    if (!wait_ok) {
+        /*
+         * waitpid() failed (e.g. ECHILD). Reporting COMPLETED here would fabricate a
+         * successful exit with code 0 for a workload whose result we never observed.
+         */
+        int saved_err = errno;
+        if (wl->cgroup_active) {
+            minibox_cgroup_cleanup(wl->cgroup_path);
+        }
+        wl->state = MINIBOX_STATE_FAILED;
+        wl->exec_errno = saved_err;
+        snprintf(wl->error_msg, sizeof(wl->error_msg), "waitpid failed: %s",
+                 strerror(saved_err != 0 ? saved_err : ECHILD));
+        wl->finished_at_ms = minibox_current_time_ms();
+        minibox_workload_save(wl);
+        return -1;
+    }
 
     if (wl->cgroup_active) {
         char events_path[1100];
@@ -568,16 +602,28 @@ int minibox_start_workload_background(minibox_workload_t *wl,
     if (supervisor_pid > 0) {
         close(sync_pipe[1]);
         int start_result = -1;
-        ssize_t n = read(sync_pipe[0], &start_result, sizeof(start_result));
+        size_t got = 0;
+        bool io_ok = true;
+        while (got < sizeof(start_result)) {
+            ssize_t n = read(sync_pipe[0], ((char *)&start_result) + got,
+                             sizeof(start_result) - got);
+            if (n < 0) {
+                if (errno == EINTR) continue;
+                io_ok = false;
+                break;
+            }
+            if (n == 0) break;
+            got += (size_t)n;
+        }
         close(sync_pipe[0]);
 
-        if (n == sizeof(start_result) && start_result == 0) {
+        /* A signal during startup must not be reported as a launch failure. */
+        if (io_ok && got == sizeof(start_result) && start_result == 0) {
             minibox_workload_load(wl->id, wl);
             return 0;
-        } else {
-            minibox_workload_load(wl->id, wl);
-            return -1;
         }
+        minibox_workload_load(wl->id, wl);
+        return -1;
     }
 
     /* Supervisor process */
@@ -729,15 +775,17 @@ int minibox_start_workload_background(minibox_workload_t *wl,
             }
 
             /* In child: this process is PID 1 in the new PID namespace.
-             * Mount new /proc filesystem as a mandatory step for PID isolation. */
-            if (mount("proc", "/proc", "proc", 0, NULL) != 0) {
+             * Mount new /proc filesystem as a mandatory step for PID isolation.
+             * MS_NOSUID|MS_NODEV|MS_NOEXEC matches what a hardened runtime does and
+             * prevents suid/device/exec tricks through the freshly mounted /proc. */
+            if (mount("proc", "/proc", "proc", MINIBOX_PROC_MOUNT_FLAGS, NULL) != 0) {
                 int err = errno;
                 (void)write(err_pipe[1], &err, sizeof(err));
                 close(err_pipe[1]);
                 _exit(127);
             }
         } else if (iso && iso->enable_mount) {
-            if (mount("proc", "/proc", "proc", 0, NULL) != 0) {
+            if (mount("proc", "/proc", "proc", MINIBOX_PROC_MOUNT_FLAGS, NULL) != 0) {
                 int err = errno;
                 (void)write(err_pipe[1], &err, sizeof(err));
                 close(err_pipe[1]);
@@ -758,6 +806,13 @@ int minibox_start_workload_background(minibox_workload_t *wl,
         dup2(log_fd, STDERR_FILENO);
         close(log_fd);
 
+        /* Last step before exec: lock down what the workload can reach. */
+        if (minibox_apply_runtime_hardening(false) != 0) {
+            int err = errno;
+            (void)write(err_pipe[1], &err, sizeof(err));
+            close(err_pipe[1]);
+            _exit(127);
+        }
 
         char *const default_argv[] = {wl->executable, NULL};
         char *const *exec_argv = argv ? argv : default_argv;
@@ -845,6 +900,7 @@ int minibox_start_workload_background(minibox_workload_t *wl,
     }
 
     wl->pid = child_pid;
+    wl->pid_start_time = minibox_pid_start_time(child_pid);
     wl->supervisor_pid = getpid();
     wl->state = MINIBOX_STATE_RUNNING;
     wl->started_at_ms = minibox_current_time_ms();
@@ -855,13 +911,29 @@ int minibox_start_workload_background(minibox_workload_t *wl,
     close(sync_pipe[1]);
 
     int status = 0;
+    bool wait_ok = false;
     while (1) {
         pid_t w = waitpid(child_pid, &status, 0);
         if (w < 0) {
             if (errno == EINTR) continue;
             break;
         }
+        wait_ok = true;
         break;
+    }
+
+    if (!wait_ok) {
+        int saved_err = errno;
+        if (wl->cgroup_active) {
+            minibox_cgroup_cleanup(wl->cgroup_path);
+        }
+        wl->state = MINIBOX_STATE_FAILED;
+        wl->exec_errno = saved_err;
+        snprintf(wl->error_msg, sizeof(wl->error_msg), "waitpid failed: %s",
+                 strerror(saved_err != 0 ? saved_err : ECHILD));
+        wl->finished_at_ms = minibox_current_time_ms();
+        minibox_workload_save(wl);
+        _exit(0);
     }
 
     if (wl->cgroup_active) {
@@ -895,6 +967,21 @@ int minibox_start_workload_background(minibox_workload_t *wl,
     _exit(0);
 }
 
+/* How long to wait for a workload to disappear after signalling it. */
+#define MINIBOX_STOP_POLL_TRIES     50
+#define MINIBOX_STOP_POLL_INTERVAL  20000  /* 20 ms  */
+#define MINIBOX_STOP_SETTLE_USEC    20000  /* 20 ms  */
+
+/*
+ * True when the workload's tracked process has finished executing, including the
+ * case where it is a zombie awaiting its parent's wait(). kill(pid, 0) succeeds for
+ * zombies, so a plain existence probe would wait out the full timeout.
+ */
+static bool workload_process_finished(const minibox_workload_t *wl) {
+    if (wl->pid <= 1) return true;
+    return !minibox_pid_is_live(wl->pid);
+}
+
 int minibox_stop_workload(const char *id, int signal_num, bool force) {
     if (!id) {
         errno = EINVAL;
@@ -917,6 +1004,31 @@ int minibox_stop_workload(const char *id, int signal_num, bool force) {
         return -1;
     }
 
+    /*
+     * Never signal a PID that is not the process we started. Comparing the kernel
+     * start time against the value recorded at launch is what makes this safe when
+     * the original process died and the kernel recycled its PID.
+     */
+    if (!minibox_pid_matches(wl.pid, wl.pid_start_time)) {
+        /* The tracked process is already gone (or has been recycled). Nothing to signal. */
+        minibox_workload_refresh_state(&wl);
+        if (!minibox_state_is_terminal(wl.state)) {
+            wl.state = MINIBOX_STATE_TERMINATED;
+            if (wl.finished_at_ms == 0) {
+                wl.finished_at_ms = minibox_current_time_ms();
+            }
+            if (wl.cgroup_active) {
+                minibox_cgroup_cleanup(wl.cgroup_path);
+            }
+            minibox_workload_save(&wl);
+        }
+        return 0;
+    }
+
+    /*
+     * Publish STOPPING before signalling so a concurrent observer sees the request.
+     * The supervisor may already have written a terminal record; never downgrade it.
+     */
     wl.state = MINIBOX_STATE_STOPPING;
     minibox_workload_save(&wl);
 
@@ -929,39 +1041,71 @@ int minibox_stop_workload(const char *id, int signal_num, bool force) {
         return -1;
     }
 
-    bool exited = false;
-    for (int i = 0; i < 50; i++) {
-        if (kill(wl.pid, 0) != 0 && errno == ESRCH) {
-            exited = true;
+    bool finished = false;
+    for (int i = 0; i < MINIBOX_STOP_POLL_TRIES; i++) {
+        if (workload_process_finished(&wl)) {
+            finished = true;
             break;
         }
-        usleep(20000);
+        usleep(MINIBOX_STOP_POLL_INTERVAL);
     }
 
-    if (!exited && force) {
+    int signal_sent = sig;
+    if (!finished && force) {
+        signal_sent = SIGKILL;
         kill(wl.pid, SIGKILL);
-        for (int i = 0; i < 25; i++) {
-            if (kill(wl.pid, 0) != 0 && errno == ESRCH) {
-                exited = true;
+        for (int i = 0; i < MINIBOX_STOP_POLL_TRIES / 2; i++) {
+            if (workload_process_finished(&wl)) {
+                finished = true;
                 break;
             }
-            usleep(20000);
+            usleep(MINIBOX_STOP_POLL_INTERVAL);
         }
     }
 
-    usleep(20000);
-    minibox_workload_refresh_state(&wl);
+    /*
+     * If a supervisor is still alive it owns the authoritative terminal record; give it
+     * a moment to publish, and prefer its result over anything we synthesise here.
+     */
+    bool supervisor_alive = (wl.supervisor_pid > 1) && minibox_pid_is_live(wl.supervisor_pid);
+    if (supervisor_alive) {
+        for (int i = 0; i < MINIBOX_STOP_POLL_TRIES / 2; i++) {
+            minibox_workload_t latest;
+            if (minibox_workload_load(id, &latest) == 0 &&
+                minibox_state_is_terminal(latest.state)) {
+                wl = latest;
+                goto settled;
+            }
+            usleep(MINIBOX_STOP_POLL_INTERVAL);
+        }
+    }
 
+    usleep(MINIBOX_STOP_SETTLE_USEC);
+
+    /*
+     * No supervisor survived to reap the child, so the real exit status is unknowable.
+     * Record the signal we actually delivered rather than claiming a clean shutdown,
+     * and reclaim the cgroup that no supervisor will clean up. This path deliberately
+     * avoids minibox_workload_refresh_state(), which would stamp term_signal = 0.
+     */
+    minibox_workload_t latest;
+    if (minibox_workload_load(id, &latest) == 0) {
+        wl = latest;
+    }
     if (!minibox_state_is_terminal(wl.state)) {
         wl.state = MINIBOX_STATE_TERMINATED;
-        wl.term_signal = force ? SIGKILL : sig;
+        wl.term_signal = signal_sent;
+        wl.exit_code = 0;
         if (wl.finished_at_ms == 0) {
             wl.finished_at_ms = minibox_current_time_ms();
         }
-        if (wl.cgroup_active) {
-            minibox_cgroup_cleanup(wl.cgroup_path);
-        }
         minibox_workload_save(&wl);
+    }
+
+settled:
+    if (wl.cgroup_active && wl.cgroup_path[0]) {
+        /* Best effort: a surviving descendant may still hold the directory. */
+        (void)minibox_cgroup_cleanup(wl.cgroup_path);
     }
 
     return 0;
