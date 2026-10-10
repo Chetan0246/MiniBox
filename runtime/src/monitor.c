@@ -59,11 +59,11 @@ int minibox_collect_host_metrics(minibox_host_metrics_t *out_host) {
     FILE *f_mem = fopen("/proc/meminfo", "r");
     if (f_mem) {
         char line[256];
-        uint64_t total_kb = 0, avail_kb = 0, free_kb = 0;
+        unsigned long long total_kb = 0, avail_kb = 0, free_kb = 0;
         while (fgets(line, sizeof(line), f_mem)) {
-            if (sscanf(line, "MemTotal: %lu kB", &total_kb) == 1) continue;
-            if (sscanf(line, "MemAvailable: %lu kB", &avail_kb) == 1) continue;
-            if (sscanf(line, "MemFree: %lu kB", &free_kb) == 1) continue;
+            if (sscanf(line, "MemTotal: %llu kB", &total_kb) == 1) continue;
+            if (sscanf(line, "MemAvailable: %llu kB", &avail_kb) == 1) continue;
+            if (sscanf(line, "MemFree: %llu kB", &free_kb) == 1) continue;
         }
         fclose(f_mem);
 
@@ -177,8 +177,8 @@ static int read_cgroup_cpu_stat(const char *cgroup_path, minibox_cpu_metrics_t *
     char line[256];
     while (fgets(line, sizeof(line), f)) {
         char key[64] = {0};
-        uint64_t val = 0;
-        if (sscanf(line, "%63s %lu", key, &val) == 2) {
+        unsigned long long val = 0;
+        if (sscanf(line, "%63s %llu", key, &val) == 2) {
             if (strcmp(key, "usage_usec") == 0) cpu->usage_usec = val;
             else if (strcmp(key, "user_usec") == 0) cpu->user_usec = val;
             else if (strcmp(key, "system_usec") == 0) cpu->system_usec = val;
@@ -242,12 +242,12 @@ static int read_proc_pid_status(pid_t pid, uint64_t *out_rss_bytes, uint64_t *ou
     if (!f) return -1;
 
     char line[256];
-    uint64_t rss_kb = 0, peak_kb = 0;
+    unsigned long long rss_kb = 0, peak_kb = 0;
     int threads = 0;
 
     while (fgets(line, sizeof(line), f)) {
-        if (sscanf(line, "VmRSS: %lu kB", &rss_kb) == 1) continue;
-        if (sscanf(line, "VmHWM: %lu kB", &peak_kb) == 1) continue;
+        if (sscanf(line, "VmRSS: %llu kB", &rss_kb) == 1) continue;
+        if (sscanf(line, "VmHWM: %llu kB", &peak_kb) == 1) continue;
         if (sscanf(line, "Threads: %d", &threads) == 1) continue;
     }
     fclose(f);

@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -84,7 +85,7 @@ int minibox_run_process(const minibox_process_config_t *config, minibox_process_
          * Execute target program. argv must be NULL-terminated.
          * If config->argv is NULL, construct a 1-element argv with just the executable.
          */
-        char *const default_argv[] = {(char *)config->executable, NULL};
+        char *const default_argv[] = {(char *)(uintptr_t)config->executable, NULL};
         char *const *exec_argv = config->argv ? config->argv : default_argv;
 
         execvp(config->executable, exec_argv);
@@ -481,7 +482,8 @@ int minibox_run_workload_foreground(minibox_workload_t *wl,
             char eline[128];
             while (fgets(eline, sizeof(eline), f_ev)) {
                 int count = 0;
-                if (sscanf(eline, "oom_kill %d", &count) == 1 && count > 0) {
+                if ((sscanf(eline, "oom_kill %d", &count) == 1 ||
+                     sscanf(eline, "oom %d", &count) == 1) && count > 0) {
                     wl->oom_killed = true;
                     break;
                 }
@@ -870,7 +872,8 @@ int minibox_start_workload_background(minibox_workload_t *wl,
             char eline[128];
             while (fgets(eline, sizeof(eline), f_ev)) {
                 int count = 0;
-                if (sscanf(eline, "oom_kill %d", &count) == 1 && count > 0) {
+                if ((sscanf(eline, "oom_kill %d", &count) == 1 ||
+                     sscanf(eline, "oom %d", &count) == 1) && count > 0) {
                     wl->oom_killed = true;
                     break;
                 }

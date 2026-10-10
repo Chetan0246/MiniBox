@@ -99,6 +99,11 @@ ERR_PID_OVF=$("$TARGET" run --pids 9999999999999999999999 "$REPO_ROOT/bin/exampl
 ERR_MEM_MAL=$("$TARGET" run --memory 10Mxyz "$REPO_ROOT/bin/examples/hello" 2>&1 || true)
 ERR_MEM_OVF=$("$TARGET" run --memory 9999999999999999999999G "$REPO_ROOT/bin/examples/hello" 2>&1 || true)
 
+ERR_SMS_MAL=$("$TARGET" metrics --sample-ms abc 2>&1 || true)
+ERR_SMS_NEG=$("$TARGET" metrics --sample-ms -5 2>&1 || true)
+ERR_SMS_OVF=$("$TARGET" metrics --sample-ms 9999999 2>&1 || true)
+ERR_SMS_NOARG=$("$TARGET" metrics --sample-ms 2>&1 || true)
+
 VALIDATION_OK=true
 for err in "$ERR_CPU_MAL" "$ERR_CPU_NEG" "$ERR_CPU_ZERO" "$ERR_CPU_OVF"; do
     if ! echo "$err" | grep -qi "invalid cpu"; then VALIDATION_OK=false; fi
@@ -109,6 +114,10 @@ done
 for err in "$ERR_MEM_MAL" "$ERR_MEM_OVF"; do
     if ! echo "$err" | grep -qi "invalid memory"; then VALIDATION_OK=false; fi
 done
+for err in "$ERR_SMS_MAL" "$ERR_SMS_NEG" "$ERR_SMS_OVF"; do
+    if ! echo "$err" | grep -qi "invalid sample-ms"; then VALIDATION_OK=false; fi
+done
+if ! echo "$ERR_SMS_NOARG" | grep -qi "requires an argument"; then VALIDATION_OK=false; fi
 
 if [ "$VALIDATION_OK" = true ]; then
     pass "All malformed, negative, zero, and overflow limits strictly rejected"

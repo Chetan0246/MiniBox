@@ -783,11 +783,15 @@ static int cmd_metrics(int argc, char *argv[]) {
         if (strcmp(argv[i], "--json") == 0) {
             json_output = true;
         } else if (strcmp(argv[i], "--sample-ms") == 0) {
-            if (i + 1 < argc) {
-                sample_ms = atoi(argv[i + 1]);
-                if (sample_ms < 0) sample_ms = 0;
-                i++;
+            if (i + 1 >= argc) {
+                fprintf(stderr, "Error: --sample-ms requires an argument\n");
+                return 1;
             }
+            if (parse_strict_positive_int(argv[i + 1], 0, 60000, &sample_ms) != 0) {
+                fprintf(stderr, "Error: Invalid sample-ms '%s' (must be an integer between 0 and 60000)\n", argv[i + 1]);
+                return 1;
+            }
+            i++;
         } else if (argv[i][0] != '-') {
             id = argv[i];
         }
