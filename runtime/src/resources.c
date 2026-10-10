@@ -336,19 +336,36 @@ int minibox_cgroup_setup_workload(const char *workload_id,
         }
 
         /* Prevent swap from bypassing container memory ceiling */
-        char swap_path[800];
+        char swap_path[1100];
         snprintf(swap_path, sizeof(swap_path), "%s/memory.swap.max", wl_cg);
+        bool swap_applied = false;
+        char swap_rb[64] = {0};
         FILE *f_swap = fopen(swap_path, "w");
         if (f_swap) {
-            (void)fprintf(f_swap, "0\n");
-            (void)fflush(f_swap);
-            fclose(f_swap);
+            if (fprintf(f_swap, "0\n") >= 0 && fflush(f_swap) == 0) {
+                if (fclose(f_swap) == 0) {
+                    if (read_file_string(swap_path, swap_rb, sizeof(swap_rb)) == 0 && strcmp(swap_rb, "0") == 0) {
+                        swap_applied = true;
+                    }
+                }
+            } else {
+                fclose(f_swap);
+            }
+        }
+        if (!swap_applied) {
+            int saved_err = errno ? errno : EIO;
+            snprintf(status->error_msg, sizeof(status->error_msg),
+                     "Failed to apply memory swap limit: readback ('%s') did not match 0",
+                     swap_rb[0] ? swap_rb : strerror(saved_err));
+            minibox_cgroup_cleanup(wl_cg);
+            errno = saved_err;
+            return -1;
         }
     }
 
     /* 3. Configure cpu.max (quota us / period us) */
     if (limits->cpu_percent > 0) {
-        char path[800];
+        char path[1100];
         snprintf(path, sizeof(path), "%s/cpu.max", wl_cg);
         uint64_t quota_us = ((uint64_t)MINIBOX_DEFAULT_CPU_PERIOD_US * (uint64_t)limits->cpu_percent) / 100ULL;
         FILE *f = fopen(path, "w");
@@ -415,21 +432,26 @@ int minibox_cgroup_attach_pid(const char *cgroup_path, pid_t pid) {
 
     /* Verify PID is present in cgroup.procs readback */
     FILE *rf = fopen(path, "r");
-    if (rf) {
-        char line[64];
-        bool found = false;
-        while (fgets(line, sizeof(line), rf)) {
-            pid_t p = 0;
-            if (sscanf(line, "%d", &p) == 1 && p == pid) {
-                found = true;
-                break;
-            }
+    if (!rf) {
+        return -1;
+    }
+
+    char line[64];
+    bool found = false;
+    while (fgets(line, sizeof(line), rf)) {
+        pid_t p = 0;
+        if (sscanf(line, "%d", &p) == 1 && p == pid) {
+            found = true;
+            break;
         }
-        fclose(rf);
-        if (!found) {
-            errno = ESRCH;
-            return -1;
-        }
+    }
+    int close_rf_err = fclose(rf);
+    if (!found) {
+        errno = ESRCH;
+        return -1;
+    }
+    if (close_rf_err != 0) {
+        return -1;
     }
 
     return 0;
@@ -439,7 +461,7 @@ int minibox_cgroup_cleanup(const char *cgroup_path) {
     if (!cgroup_path || cgroup_path[0] == 0) return 0;
 
     /* Signal kernel to terminate any lingering processes in this cgroup */
-    char kill_path[800];
+    char kill_path[1100];
     snprintf(kill_path, sizeof(kill_path), "%s/cgroup.kill", cgroup_path);
     FILE *f_kill = fopen(kill_path, "w");
     if (f_kill) {
