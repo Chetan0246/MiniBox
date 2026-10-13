@@ -284,6 +284,10 @@ static int cmd_run(int argc, char *argv[]) {
                 fprintf(stderr, "Error: --hostname requires an argument\n");
                 return 1;
             }
+            if (strlen(argv[exec_index + 1]) >= sizeof(iso.hostname)) {
+                fprintf(stderr, "Error: Hostname is too long (maximum %zu characters)\n", sizeof(iso.hostname) - 1);
+                return 1;
+            }
             iso.enable_uts = true;
             snprintf(iso.hostname, sizeof(iso.hostname), "%s", argv[exec_index + 1]);
             exec_index += 2;
@@ -464,6 +468,10 @@ static int cmd_start(int argc, char *argv[]) {
         } else if (strcmp(argv[exec_index], "--hostname") == 0) {
             if (exec_index + 1 >= argc) {
                 fprintf(stderr, "Error: --hostname requires an argument\n");
+                return 1;
+            }
+            if (strlen(argv[exec_index + 1]) >= sizeof(iso.hostname)) {
+                fprintf(stderr, "Error: Hostname is too long (maximum %zu characters)\n", sizeof(iso.hostname) - 1);
                 return 1;
             }
             iso.enable_uts = true;

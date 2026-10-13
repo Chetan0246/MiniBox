@@ -231,6 +231,13 @@ class MiniBoxClient:
         cmd.append(workload_id)
 
         code, out, err = await self._run_command(*cmd)
+        if out.strip():
+            data = self._decode_json(out, f"delete {workload_id}")
+            if data is not None:
+                if data.get("ok"):
+                    return True, f"Workload '{workload_id}' deleted"
+                message = data.get("error") or err.strip() or f"Failed to delete workload {workload_id}"
+                return False, str(message)
         if code == 0:
             return True, f"Workload '{workload_id}' deleted"
         return False, err.strip() or out.strip() or f"Failed to delete workload {workload_id}"

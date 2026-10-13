@@ -397,9 +397,8 @@ static int install_seccomp_filter(void) {
  * the invoking user's privileges. These steps narrow what a workload can do to the
  * host, and must run last, after the /proc mount and any capability-dependent setup.
  *
- * Returns 0 when hardening was applied, or -1 with errno set on a hard failure.
- * When seccomp is unavailable the earlier steps still stand and -1 is returned so the
- * caller can decide whether to continue.
+ * Returns 0 when hardening was applied (including when seccomp is unavailable but
+ * the earlier steps succeeded), or -1 with errno set on a hard failure.
  */
 int minibox_apply_runtime_hardening(bool strict) {
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {

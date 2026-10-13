@@ -48,6 +48,7 @@ static ssize_t read_whole_file(const char *path, char **out_buf) {
             return -1;
         }
         cap = (size_t)st.st_size + 1;
+        if (cap < 4096) cap = 4096;
     }
 
     char *buf = malloc(cap);
@@ -58,7 +59,36 @@ static ssize_t read_whole_file(const char *path, char **out_buf) {
     }
 
     size_t total = 0;
-    while (total + 1 < cap) {
+    while (1) {
+        if (total + 1 >= cap) {
+            if (cap >= MINIBOX_STATE_FILE_MAX + 1) {
+                free(buf);
+                close(fd);
+                errno = EFBIG;
+                return -1;
+            }
+            size_t new_cap = cap * 2;
+            if (new_cap > MINIBOX_STATE_FILE_MAX + 1) {
+                new_cap = MINIBOX_STATE_FILE_MAX + 1;
+            }
+            if (new_cap <= cap) {
+                free(buf);
+                close(fd);
+                errno = EFBIG;
+                return -1;
+            }
+            char *new_buf = realloc(buf, new_cap);
+            if (!new_buf) {
+                int saved = errno;
+                free(buf);
+                close(fd);
+                errno = saved ? saved : ENOMEM;
+                return -1;
+            }
+            buf = new_buf;
+            cap = new_cap;
+        }
+
         ssize_t n = read(fd, buf + total, cap - total - 1);
         if (n < 0) {
             if (errno == EINTR) continue;
@@ -70,6 +100,12 @@ static ssize_t read_whole_file(const char *path, char **out_buf) {
         }
         if (n == 0) break;
         total += (size_t)n;
+        if (total > MINIBOX_STATE_FILE_MAX) {
+            free(buf);
+            close(fd);
+            errno = EFBIG;
+            return -1;
+        }
     }
     buf[total] = 0;
     close(fd);
@@ -860,17 +896,24 @@ int minibox_workload_delete(const char *id, bool force) {
     char dir[MINIBOX_WL_DIR_MAX];
     snprintf(dir, sizeof(dir), "%s/%s", base, id);
 
-    /* Verify that dir resolves within base */
+    /* Verify that dir resolves within base when it still exists. A workload record
+     * whose directory was already removed can still be cleaned up safely. */
     char resolved_base[PATH_MAX] = {0};
     char resolved_dir[PATH_MAX] = {0};
-    if (realpath(base, resolved_base) && realpath(dir, resolved_dir)) {
+    if (realpath(base, resolved_base) == NULL) {
+        return -1;
+    }
+    if (stat(dir, &(struct stat){0}) == 0) {
+        if (realpath(dir, resolved_dir) == NULL) {
+            return -1;
+        }
         size_t base_len = strlen(resolved_base);
         if (strncmp(resolved_dir, resolved_base, base_len) != 0 ||
             resolved_dir[base_len] != '/') {
             errno = EACCES;
             return -1;
         }
-    } else {
+    } else if (errno != ENOENT) {
         return -1;
     }
 
