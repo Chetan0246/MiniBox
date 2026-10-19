@@ -191,10 +191,10 @@ Measurements recorded across 10 empirical trials on native hardware (AMD Ryzen 7
 
 ## Running the Automated Test Suite
 
-MiniBox includes comprehensive test suites covering all 8 phases of development plus behavioral hardening (89 passing tests):
+MiniBox includes comprehensive test suites covering all 8 phases of development plus behavioral hardening and regression suites (113 passing tests across 10 test suites):
 
 ```bash
-# Run all automated test suites (Phases 1 through 8 + Behavioral Verification)
+# Run all automated test suites (Phases 1 through 8 + Behavioral Verification + Regressions)
 make test
 
 # Run individual test suites
@@ -219,6 +219,7 @@ make demo
 
 - [Architecture Specification (`docs/architecture.md`)](docs/architecture.md): UI, protocol, runtime modules, and Linux interfaces.
 - [Detailed Design (`docs/design.md`)](docs/design.md): State machine, process launch sequence, namespace init, and error handling.
+- [Technical Deep Dive (`docs/MiniBox_Deep_Dive.md`)](docs/MiniBox_Deep_Dive.md): Comprehensive architectural walkthrough, audit history, and low-level subsystem details.
 - [User Manual (`docs/user_manual.md`)](docs/user_manual.md): Step-by-step navigation, workload creation, and troubleshooting.
 - [Testing Strategy & Report (`docs/testing.md`)](docs/testing.md): Test matrix (T01–T15), expected vs. actual results, and verification evidence.
 - [Performance Evaluation (`docs/performance_report.md`)](docs/performance_report.md): Methodology, empirical data tables, and analysis.
